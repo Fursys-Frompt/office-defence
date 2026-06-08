@@ -1,0 +1,1110 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { io, Socket } from 'socket.io-client';
+import type {
+  ClientToServerEvents,
+  FacilityType,
+  FeedbackEvent,
+  GameSnapshot,
+  PlayerInput,
+  ResourceInventory,
+  ResourceType,
+  RoomSettings,
+  ServerToClientEvents,
+  Vec2
+} from '../../shared/src/types';
+import avatarAtlasUrl from './assets/office-player-avatars.png';
+import propAtlasUrl from './assets/office-props-atlas.png';
+import spriteSheetUrl from './assets/office-survival-sprites.png';
+import './styles.css';
+
+type GameSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
+type VisualEffect = Omit<FeedbackEvent, 'type'> & {
+  type: FeedbackEvent['type'] | 'meleeSwing';
+  startedAt: number;
+};
+type AudioCue = FeedbackEvent['type'] | 'shoot' | 'melee';
+
+const socket: GameSocket = io();
+const facilityKeys: FacilityType[] = ['partitionBarricade', 'deskBarricade', 'medStation', 'powerAmplifier'];
+const resourceKeys: ResourceType[] = ['chairParts', 'deskParts', 'partitionMaterial', 'powerModule', 'medKit'];
+const RESOURCE_LABELS: Record<ResourceType, string> = {
+  chairParts: 'Chair',
+  deskParts: 'Desk',
+  partitionMaterial: 'Panel',
+  powerModule: 'Power',
+  medKit: 'Med'
+};
+const FACILITY_LABELS: Record<FacilityType, string> = {
+  partitionBarricade: 'Panel',
+  deskBarricade: 'Desk',
+  medStation: 'Med Box',
+  powerAmplifier: 'Amp'
+};
+const FACILITY_COSTS: Record<FacilityType, Partial<ResourceInventory>> = {
+  partitionBarricade: { chairParts: 1, partitionMaterial: 1 },
+  deskBarricade: { deskParts: 2, partitionMaterial: 1 },
+  medStation: { medKit: 1, deskParts: 1 },
+  powerAmplifier: { powerModule: 1, partitionMaterial: 2 }
+};
+const SPRITES = {
+  player: { col: 0, row: 0, size: 70 },
+  normal: { col: 1, row: 0, size: 68 },
+  runner: { col: 0, row: 1, size: 72 },
+  tanker: { col: 1, row: 1, size: 92 }
+} as const;
+const RESOURCE_SPRITES: Record<ResourceType, { col: number; row: number; size: number }> = {
+  chairParts: { col: 0, row: 0, size: 34 },
+  deskParts: { col: 1, row: 0, size: 34 },
+  partitionMaterial: { col: 2, row: 0, size: 38 },
+  powerModule: { col: 3, row: 0, size: 36 },
+  medKit: { col: 0, row: 1, size: 36 }
+};
+const FACILITY_SPRITES: Record<FacilityType, { col: number; row: number; size: number }> = {
+  partitionBarricade: { col: 1, row: 1, size: 58 },
+  deskBarricade: { col: 2, row: 1, size: 62 },
+  medStation: { col: 3, row: 1, size: 62 },
+  powerAmplifier: { col: 0, row: 2, size: 62 }
+};
+const DECOR_SPRITES = [
+  { col: 1, row: 2, position: { x: 260, y: 210 }, size: 118 },
+  { col: 1, row: 2, position: { x: 440, y: 240 }, size: 118 },
+  { col: 2, row: 2, position: { x: 820, y: 210 }, size: 150 },
+  { col: 3, row: 2, position: { x: 1160, y: 310 }, size: 130 },
+  { col: 1, row: 3, position: { x: 420, y: 790 }, size: 122 },
+  { col: 0, row: 3, position: { x: 940, y: 820 }, size: 128 },
+  { col: 2, row: 3, position: { x: 1340, y: 780 }, size: 124 },
+  { col: 3, row: 3, position: { x: 108, y: 510 }, size: 84 },
+  { col: 3, row: 3, position: { x: 1490, y: 128 }, size: 84 }
+] as const;
+const AVATARS = [
+  { id: 0, label: 'Teal Lead', col: 0, row: 0 },
+  { id: 1, label: 'Coral Planner', col: 1, row: 0 },
+  { id: 2, label: 'Gold Maker', col: 0, row: 1 },
+  { id: 3, label: 'Violet Guard', col: 1, row: 1 }
+] as const;
+
+function App() {
+  const [nickname, setNickname] = useState('');
+  const [roomInput, setRoomInput] = useState('');
+  const [roomId, setRoomId] = useState('');
+  const [playerId, setPlayerId] = useState('');
+  const [avatarId, setAvatarId] = useState(0);
+  const [error, setError] = useState('');
+  const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
+  const [settings, setSettings] = useState<RoomSettings>({
+    maxPlayers: 6,
+    gameDurationSec: 180,
+    pvpEnabled: false
+  });
+
+  useEffect(() => {
+    socket.on('joined', (payload) => {
+      setRoomId(payload.roomId);
+      setPlayerId(payload.playerId);
+      setError('');
+    });
+    socket.on('snapshot', setSnapshot);
+    socket.on('errorMessage', setError);
+    return () => {
+      socket.off('joined');
+      socket.off('snapshot');
+      socket.off('errorMessage');
+    };
+  }, []);
+
+  const me = snapshot?.players.find((player) => player.id === playerId);
+
+  if (!snapshot || !me) {
+    return (
+      <main className="shell intro">
+        <section className="join-panel">
+          <div>
+            <p className="eyebrow">FURSYS Smart Office</p>
+            <h1>Zombie Office Survival</h1>
+          </div>
+          <label>
+            닉네임
+            <input value={nickname} maxLength={16} onChange={(event) => setNickname(event.target.value)} placeholder="Survivor" />
+          </label>
+          <label>
+            방 코드
+            <input value={roomInput} maxLength={8} onChange={(event) => setRoomInput(event.target.value.toUpperCase())} placeholder="새 방은 비워두기" />
+          </label>
+          <div className="avatar-picker" aria-label="Avatar">
+            {AVATARS.map((avatar) => (
+              <button
+                key={avatar.id}
+                type="button"
+                className={avatarId === avatar.id ? 'avatar-option active' : 'avatar-option'}
+                onClick={() => setAvatarId(avatar.id)}
+                title={avatar.label}
+              >
+                <span
+                  className="avatar-thumb"
+                  style={{
+                    backgroundImage: `url(${avatarAtlasUrl})`,
+                    backgroundPosition: spriteBackgroundPosition(avatar.col, avatar.row, 2, 2)
+                  }}
+                />
+              </button>
+            ))}
+          </div>
+          <div className="avatar-preview">
+            <span
+              className="avatar-preview-image"
+              style={{
+                backgroundImage: `url(${avatarAtlasUrl})`,
+                backgroundPosition: spriteBackgroundPosition(AVATARS[avatarId].col, AVATARS[avatarId].row, 2, 2)
+              }}
+            />
+            <strong>{AVATARS[avatarId].label}</strong>
+          </div>
+          <button
+            onClick={() =>
+              socket.emit('joinRoom', {
+                nickname: nickname || 'Survivor',
+                roomId: roomInput || undefined,
+                avatarId,
+                settings
+              })
+            }
+          >
+            입장
+          </button>
+          {error && <p className="error">{error}</p>}
+        </section>
+      </main>
+    );
+  }
+
+  if (snapshot.phase === 'lobby') {
+    return (
+      <main className="shell lobby">
+        <section className="panel">
+          <div className="room-header">
+            <div>
+              <p className="eyebrow">Room</p>
+              <h1>{roomId}</h1>
+            </div>
+            <button onClick={() => socket.emit('leaveRoom')}>나가기</button>
+          </div>
+          <div className="player-list">
+            {snapshot.players.map((player) => (
+              <div key={player.id} className="player-row">
+                <span>{player.nickname}{player.host ? ' / 방장' : ''}</span>
+                <strong>{player.ready ? 'READY' : 'WAIT'}</strong>
+              </div>
+            ))}
+          </div>
+          {me.host && (
+            <div className="settings">
+              <label>
+                최대 인원
+                <input
+                  type="number"
+                  min={2}
+                  max={8}
+                  value={settings.maxPlayers}
+                  onChange={(event) => setSettings({ ...settings, maxPlayers: Number(event.target.value) })}
+                />
+              </label>
+              <label>
+                게임 시간(초)
+                <input
+                  type="number"
+                  min={60}
+                  max={600}
+                  step={30}
+                  value={settings.gameDurationSec}
+                  onChange={(event) => setSettings({ ...settings, gameDurationSec: Number(event.target.value) })}
+                />
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.pvpEnabled}
+                  onChange={(event) => setSettings({ ...settings, pvpEnabled: event.target.checked })}
+                />
+                PVP
+              </label>
+              <button onClick={() => socket.emit('updateSettings', settings)}>설정 적용</button>
+            </div>
+          )}
+          <button className="primary" onClick={() => socket.emit('setReady', !me.ready)}>
+            {me.ready ? 'Ready 취소' : 'Ready'}
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  if (snapshot.phase === 'ended') {
+    const ranking = [...snapshot.players].sort((a, b) => b.score - a.score);
+    return (
+      <main className="shell result">
+        <section className="panel">
+          <p className="eyebrow">Result</p>
+          <h1>랭킹</h1>
+          <div className="ranking">
+            {ranking.map((player, index) => (
+              <div key={player.id} className="rank-row">
+                <strong>{index + 1}</strong>
+                <span>{player.nickname}</span>
+                <span>{player.score}점</span>
+                <span>{player.kills}킬</span>
+                <span>{player.survivalSec}초</span>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => window.location.reload()}>로비로</button>
+        </section>
+      </main>
+    );
+  }
+
+  return <GameView snapshot={snapshot} playerId={playerId} />;
+}
+
+function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: string }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const latestRender = useRef<{ snapshot: GameSnapshot; me: NonNullable<typeof snapshot.players[number]> } | null>(null);
+  const pressed = useRef(new Set<string>());
+  const pointer = useRef<Vec2>({ x: 1, y: 0 });
+  const shoot = useRef(false);
+  const touchAttack = useRef(false);
+  const melee = useRef(false);
+  const build = useRef<FacilityType | undefined>(undefined);
+  const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
+  const seenFeedback = useRef(new Set<string>());
+  const visualEffects = useRef<VisualEffect[]>([]);
+  const audio = useRef(createAudioEngine());
+  const [selectedFacility, setSelectedFacility] = useState<FacilityType>('partitionBarricade');
+  const [buildMode, setBuildMode] = useState(false);
+  const spriteSheet = useGameImage(spriteSheetUrl);
+  const propAtlas = useGameImage(propAtlasUrl);
+  const avatarAtlas = useGameImage(avatarAtlasUrl);
+  const me = snapshot.players.find((player) => player.id === playerId);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      audio.current.unlock();
+      pressed.current.add(event.code);
+      if (event.code === 'Digit1') { setSelectedFacility('partitionBarricade'); setBuildMode(true); }
+      if (event.code === 'Digit2') { setSelectedFacility('deskBarricade'); setBuildMode(true); }
+      if (event.code === 'Digit3') { setSelectedFacility('medStation'); setBuildMode(true); }
+      if (event.code === 'Digit4') { setSelectedFacility('powerAmplifier'); setBuildMode(true); }
+      if (event.code === 'Escape') setBuildMode(false);
+      if (event.code === 'KeyB' && buildMode) build.current = selectedFacility;
+    };
+    const onKeyUp = (event: KeyboardEvent) => pressed.current.delete(event.code);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [selectedFacility, buildMode]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const move = keyboardMove(pressed.current, joystick.current?.value);
+      const spaceAttack = pressed.current.has('Space');
+      const autoAttack = spaceAttack || touchAttack.current;
+      const autoAim = me ? getAutoAim(snapshot, me.position) : undefined;
+      const aim = autoAttack && autoAim ? autoAim.direction : pointer.current;
+      const input: PlayerInput = {
+        move,
+        aim,
+        shooting: shoot.current || touchAttack.current || (spaceAttack && (!autoAim || autoAim.distance >= 68)),
+        melee: melee.current || (autoAttack && Boolean(autoAim && autoAim.distance < 68)),
+        build: build.current
+      };
+      if (input.shooting && canPlayLocalCue('shoot')) audio.current.play('shoot');
+      if (input.melee && canPlayLocalCue('melee')) {
+        audio.current.play('melee');
+        if (me) {
+          const now = performance.now();
+          visualEffects.current.push({
+            id: `local_melee_${now}`,
+            type: 'meleeSwing',
+            position: { x: me.position.x + aim.x * 36, y: me.position.y + aim.y * 36 },
+            text: '',
+            startedAt: now
+          });
+          visualEffects.current = visualEffects.current.filter((effect) => now - effect.startedAt < 900);
+        }
+      }
+      socket.emit('input', input);
+      melee.current = false;
+      build.current = undefined;
+    }, 50);
+    return () => window.clearInterval(id);
+  }, [snapshot, me]);
+
+  useEffect(() => {
+    if (me) latestRender.current = { snapshot, me };
+  }, [snapshot, me]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    let frame = 0;
+    const render = () => {
+      const current = latestRender.current;
+      if (current) {
+        const rect = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const targetWidth = Math.floor(rect.width * dpr);
+        const targetHeight = Math.floor(rect.height * dpr);
+        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+        }
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        drawGame(
+          context,
+          rect.width,
+          rect.height,
+          current.snapshot,
+          current.me.position,
+          spriteSheet,
+          propAtlas,
+          avatarAtlas,
+          buildMode ? selectedFacility : undefined,
+          visualEffects.current
+        );
+      }
+      frame = requestAnimationFrame(render);
+    };
+    frame = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(frame);
+  }, [spriteSheet, propAtlas, avatarAtlas, selectedFacility, buildMode]);
+
+  useEffect(() => {
+    const now = performance.now();
+    for (const event of snapshot.feedbackEvents) {
+      if (seenFeedback.current.has(event.id)) continue;
+      seenFeedback.current.add(event.id);
+      visualEffects.current.push({ ...event, startedAt: now });
+      audio.current.play(event.type);
+    }
+    visualEffects.current = visualEffects.current.filter((effect) => now - effect.startedAt < 900);
+    if (seenFeedback.current.size > 240) {
+      const visibleIds = new Set(snapshot.feedbackEvents.map((event) => event.id));
+      seenFeedback.current = new Set([...seenFeedback.current].filter((id) => visibleIds.has(id)));
+    }
+  }, [snapshot.feedbackEvents]);
+
+  const hud = useMemo(() => {
+    const sorted = [...snapshot.players].sort((a, b) => b.score - a.score).slice(0, 4);
+    return sorted;
+  }, [snapshot.players]);
+
+  return (
+    <main className="game">
+      <canvas
+        ref={canvasRef}
+        onMouseMove={(event) => {
+          if (!me) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          pointer.current = {
+            x: event.clientX - rect.left - rect.width / 2,
+            y: event.clientY - rect.top - rect.height / 2
+          };
+        }}
+        onMouseDown={() => {
+          audio.current.unlock();
+          shoot.current = true;
+        }}
+        onMouseUp={() => {
+          shoot.current = false;
+        }}
+        onTouchStart={(event) => handleTouch(event, joystick, touchAttack)}
+        onTouchMove={(event) => handleTouch(event, joystick, touchAttack)}
+        onTouchEnd={(event) => handleTouch(event, joystick, touchAttack)}
+      />
+      <section className="hud top-left">
+        <strong>{me?.nickname}</strong>
+        <span>HP {Math.ceil(me?.hp ?? 0)}</span>
+        <span>{me?.score ?? 0}점</span>
+      </section>
+      <section className="hud inventory-hud">
+        {resourceKeys.map((resource) => (
+          <span key={resource} className={`inventory-chip ${(me?.inventory[resource] ?? 0) > 0 ? 'has' : 'empty'}`}>
+            <i
+              style={{
+                backgroundImage: `url(${propAtlasUrl})`,
+                backgroundPosition: spriteBackgroundPosition(RESOURCE_SPRITES[resource].col, RESOURCE_SPRITES[resource].row, 4, 4)
+              }}
+            />
+            <b>{me?.inventory[resource] ?? 0}</b>
+            <em>{RESOURCE_LABELS[resource]}</em>
+          </span>
+        ))}
+      </section>
+      <section className="hud top-right">
+        <span>{snapshot.remainingSec}초</span>
+        <span>Wave {snapshot.wave}</span>
+        <span>{snapshot.settings.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
+      </section>
+      <section className="hud ranking-mini">
+        {hud.map((player, index) => (
+          <span key={player.id}>{index + 1}. {player.nickname} {player.score}</span>
+        ))}
+      </section>
+      {snapshot.phase === 'countdown' && <div className="countdown">{snapshot.countdown}</div>}
+      <section className="build-bar">
+        {facilityKeys.map((facility, index) => (
+          <button
+            key={facility}
+            className={`facility-button ${buildMode && selectedFacility === facility ? 'active' : ''} ${me && !canAffordFacility(me.inventory, facility) ? 'disabled' : ''}`}
+            onClick={() => {
+              audio.current.unlock();
+              setBuildMode((enabled) => !(enabled && selectedFacility === facility));
+              setSelectedFacility(facility);
+            }}
+          >
+            <strong>{index + 1}</strong>
+            <span>{FACILITY_LABELS[facility]}</span>
+            <small>{formatFacilityCost(facility)}</small>
+          </button>
+        ))}
+        <button
+          disabled={!me || !buildMode || !canAffordFacility(me.inventory, selectedFacility)}
+          onClick={() => { build.current = selectedFacility; }}
+        >
+          Build
+        </button>
+        <button onClick={() => setBuildMode(false)}>Cancel</button>
+        <button onClick={() => { melee.current = true; }}>근접</button>
+      </section>
+    </main>
+  );
+}
+
+function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
+  if (joystickMove && Math.hypot(joystickMove.x, joystickMove.y) > 0.05) return joystickMove;
+  return {
+    x: (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0),
+    y: (keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0)
+  };
+}
+
+function canAffordFacility(inventory: ResourceInventory, facility: FacilityType) {
+  const cost = FACILITY_COSTS[facility];
+  return Object.entries(cost).every(([resource, amount]) => inventory[resource as ResourceType] >= amount);
+}
+
+function formatFacilityCost(facility: FacilityType) {
+  return Object.entries(FACILITY_COSTS[facility])
+    .map(([resource, amount]) => `${RESOURCE_LABELS[resource as ResourceType]}${amount}`)
+    .join(' ');
+}
+
+function spriteBackgroundPosition(col: number, row: number, columns: number, rows: number) {
+  const x = columns <= 1 ? 0 : (col / (columns - 1)) * 100;
+  const y = rows <= 1 ? 0 : (row / (rows - 1)) * 100;
+  return `${x}% ${y}%`;
+}
+
+function handleTouch(
+  event: React.TouchEvent<HTMLCanvasElement>,
+  joystick: React.MutableRefObject<{ id: number; origin: Vec2; value: Vec2 } | null>,
+  touchAttack: React.MutableRefObject<boolean>
+) {
+  createAudioEngine().unlock();
+  event.preventDefault();
+  const rect = event.currentTarget.getBoundingClientRect();
+  const touches = Array.from(event.touches);
+  touchAttack.current = touches.some((touch) => touch.clientX - rect.left > rect.width * 0.55);
+  const left = touches.find((touch) => touch.clientX - rect.left < rect.width * 0.45);
+  if (!left) {
+    joystick.current = null;
+    return;
+  }
+  if (!joystick.current || joystick.current.id !== left.identifier) {
+    joystick.current = { id: left.identifier, origin: { x: left.clientX, y: left.clientY }, value: { x: 0, y: 0 } };
+  }
+  const dx = left.clientX - joystick.current.origin.x;
+  const dy = left.clientY - joystick.current.origin.y;
+  const size = Math.max(1, Math.hypot(dx, dy));
+  joystick.current.value = {
+    x: Math.max(-1, Math.min(1, dx / Math.max(60, size))),
+    y: Math.max(-1, Math.min(1, dy / Math.max(60, size)))
+  };
+}
+
+const localCueCooldowns = new Map<AudioCue, number>();
+
+function canPlayLocalCue(cue: AudioCue) {
+  const now = performance.now();
+  const previous = localCueCooldowns.get(cue) ?? 0;
+  const cooldown = cue === 'shoot' ? 150 : 260;
+  if (now - previous < cooldown) return false;
+  localCueCooldowns.set(cue, now);
+  return true;
+}
+
+let sharedAudioEngine: ReturnType<typeof createAudioEngineInternal> | undefined;
+
+function createAudioEngine() {
+  sharedAudioEngine ??= createAudioEngineInternal();
+  return sharedAudioEngine;
+}
+
+function createAudioEngineInternal() {
+  let context: AudioContext | undefined;
+  const cueCooldowns = new Map<AudioCue, number>();
+
+  const unlock = () => {
+    context ??= new AudioContext();
+    if (context.state === 'suspended') void context.resume();
+  };
+
+  const playTone = (frequency: number, duration: number, gainValue: number, type: OscillatorType, slideTo?: number) => {
+    if (!context || context.state !== 'running') return;
+    const now = context.currentTime;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, now);
+    if (slideTo) oscillator.frequency.exponentialRampToValueAtTime(slideTo, now + duration);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(gainValue, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + duration + 0.02);
+  };
+
+  const play = (cue: AudioCue) => {
+    unlock();
+    const nowMs = performance.now();
+    const previous = cueCooldowns.get(cue) ?? 0;
+    const cooldown = cue === 'hit' ? 90 : cue === 'collect' ? 80 : cue === 'shoot' ? 130 : 180;
+    if (nowMs - previous < cooldown) return;
+    cueCooldowns.set(cue, nowMs);
+
+    if (cue === 'shoot') playTone(560, 0.08, 0.025, 'square', 760);
+    else if (cue === 'melee') playTone(180, 0.09, 0.035, 'sawtooth', 110);
+    else if (cue === 'hit') playTone(220, 0.08, 0.028, 'triangle', 145);
+    else if (cue === 'kill') {
+      playTone(320, 0.08, 0.032, 'triangle', 480);
+      window.setTimeout(() => playTone(520, 0.09, 0.025, 'triangle', 780), 70);
+    } else if (cue === 'collect') playTone(720, 0.07, 0.024, 'sine', 980);
+    else if (cue === 'build') playTone(420, 0.11, 0.03, 'square', 620);
+    else if (cue === 'heal') playTone(660, 0.16, 0.022, 'sine', 880);
+    else if (cue === 'playerDown') playTone(140, 0.24, 0.04, 'sawtooth', 80);
+  };
+
+  return { unlock, play };
+}
+
+function useGameImage(url: string) {
+  const [image, setImage] = useState<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const loadedImage = new Image();
+    loadedImage.src = url;
+    loadedImage.onload = () => setImage(loadedImage);
+  }, [url]);
+
+  return image;
+}
+
+function getAutoAim(snapshot: GameSnapshot, position: Vec2) {
+  const candidates = snapshot.zombies
+    .map((zombie) => ({
+      position: zombie.position,
+      distance: Math.hypot(zombie.position.x - position.x, zombie.position.y - position.y)
+    }))
+    .sort((a, b) => a.distance - b.distance);
+  const target = candidates[0];
+  if (!target) return undefined;
+  const dx = target.position.x - position.x;
+  const dy = target.position.y - position.y;
+  const size = Math.max(1, Math.hypot(dx, dy));
+  return {
+    distance: target.distance,
+    direction: { x: dx / size, y: dy / size }
+  };
+}
+
+function drawGame(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  snapshot: GameSnapshot,
+  camera: Vec2,
+  spriteSheet: HTMLImageElement | null,
+  propAtlas: HTMLImageElement | null,
+  avatarAtlas: HTMLImageElement | null,
+  selectedFacility: FacilityType | undefined,
+  effects: VisualEffect[]
+) {
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = '#dce8e5';
+  context.fillRect(0, 0, width, height);
+  context.save();
+  context.translate(width / 2 - camera.x, height / 2 - camera.y);
+
+  drawOfficeFloor(context, snapshot.map.width, snapshot.map.height, propAtlas);
+  for (const wall of snapshot.walls) {
+    drawWall(context, wall);
+  }
+  for (const resource of snapshot.resources) {
+    drawShadow(context, resource.position, 22);
+    if (propAtlas) {
+      const sprite = RESOURCE_SPRITES[resource.type];
+      drawAtlasSprite(context, propAtlas, sprite.col, sprite.row, 4, 4, resource.position, sprite.size);
+    } else {
+      context.fillStyle = resource.type === 'medKit' ? '#e85f5c' : '#e0b84d';
+      context.beginPath();
+      context.arc(resource.position.x, resource.position.y, 10, 0, Math.PI * 2);
+      context.fill();
+    }
+  }
+  for (const facility of snapshot.facilities) {
+    drawShadow(context, facility.position, 42);
+    if (propAtlas) {
+      const sprite = FACILITY_SPRITES[facility.type];
+      drawAtlasSprite(context, propAtlas, sprite.col, sprite.row, 4, 4, facility.position, sprite.size);
+    } else {
+      context.fillStyle = facility.type === 'powerAmplifier' ? '#7bdff2' : facility.type === 'medStation' ? '#86e39c' : '#b8a77a';
+      context.beginPath();
+      context.roundRect(facility.position.x - 26, facility.position.y - 18, 52, 36, 6);
+      context.fill();
+    }
+    context.fillStyle = 'rgba(255,255,255,0.35)';
+    context.fillRect(facility.position.x - 24, facility.position.y - 25, Math.max(0, facility.hp / 160) * 48, 4);
+  }
+  for (const projectile of snapshot.projectiles) {
+    drawProjectile(context, projectile);
+  }
+  const currentPlayer = snapshot.players.find((player) => player.id === socket.id);
+  if (currentPlayer?.alive && selectedFacility) {
+    drawBuildPreview(context, snapshot, currentPlayer, selectedFacility, propAtlas);
+  }
+  for (const zombie of snapshot.zombies) {
+    const impact = getActiveImpact(zombie.position, effects);
+    const shake = impact ? Math.sin((performance.now() - impact.startedAt) * 0.09) * (1 - impact.age) * 5 : 0;
+    const drawPosition = { x: zombie.position.x + shake, y: zombie.position.y };
+    drawShadow(context, drawPosition, zombie.type === 'tanker' ? 44 : 30);
+    if (spriteSheet) {
+      const sprite = zombie.type === 'tanker' ? SPRITES.tanker : zombie.type === 'runner' ? SPRITES.runner : SPRITES.normal;
+      drawSprite(context, spriteSheet, sprite.col, sprite.row, drawPosition, sprite.size);
+      if (impact) drawImpactFlash(context, drawPosition, sprite.size, impact.age, impact.type);
+    } else {
+      context.fillStyle = zombie.type === 'tanker' ? '#6f3d8f' : zombie.type === 'runner' ? '#c84e4e' : '#5fa65d';
+      context.beginPath();
+      context.arc(drawPosition.x, drawPosition.y, zombie.type === 'tanker' ? 22 : 16, 0, Math.PI * 2);
+      context.fill();
+      if (impact) drawImpactFlash(context, drawPosition, zombie.type === 'tanker' ? 52 : 38, impact.age, impact.type);
+    }
+  }
+  for (const player of snapshot.players) {
+    context.globalAlpha = player.alive ? 1 : 0.35;
+    drawShadow(context, player.position, 28);
+    const accentColor = player.id === socket.id ? '#7bdff2' : playerColor(player.id);
+    if (avatarAtlas) {
+      const avatar = avatarSprite(player.avatarId);
+      drawAtlasSprite(context, avatarAtlas, avatar.col, avatar.row, 2, 2, player.position, avatar.size);
+    } else if (spriteSheet) {
+      drawSprite(context, spriteSheet, SPRITES.player.col, SPRITES.player.row, player.position, 60);
+    } else {
+      context.fillStyle = accentColor;
+      context.beginPath();
+      context.arc(player.position.x, player.position.y, 15, 0, Math.PI * 2);
+      context.fill();
+    }
+    context.strokeStyle = accentColor;
+    context.lineWidth = player.id === socket.id ? 3 : 2;
+    context.beginPath();
+    context.arc(player.position.x, player.position.y, player.id === socket.id ? 21 : 19, 0, Math.PI * 2);
+    context.stroke();
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(player.position.x, player.position.y);
+    context.lineTo(player.position.x + player.aim.x * 24, player.position.y + player.aim.y * 24);
+    context.stroke();
+    drawPlayerNameplate(context, player.nickname, player.hp, player.position, accentColor, player.alive);
+    context.globalAlpha = 1;
+  }
+  drawVisualEffects(context, effects);
+  context.restore();
+}
+
+function drawVisualEffects(context: CanvasRenderingContext2D, effects: VisualEffect[]) {
+  const now = performance.now();
+  for (const effect of effects) {
+    const age = (now - effect.startedAt) / 900;
+    if (age < 0 || age > 1) continue;
+    const alpha = 1 - age;
+    const y = effect.position.y - 28 - age * 34;
+    const color = effect.type === 'hit'
+      ? '#fff4a3'
+      : effect.type === 'kill'
+        ? '#ff6f61'
+        : effect.type === 'build'
+          ? '#5ac8c8'
+          : effect.type === 'heal'
+            ? '#7edc9b'
+            : effect.type === 'playerDown'
+              ? '#4f5960'
+              : effect.type === 'meleeSwing'
+                ? '#ffffff'
+                : '#f0c86a';
+
+    context.save();
+    context.globalAlpha = alpha;
+    if (effect.type === 'meleeSwing') {
+      context.strokeStyle = 'rgba(255,255,255,0.92)';
+      context.lineWidth = 7;
+      context.beginPath();
+      context.arc(effect.position.x, effect.position.y, 34, -0.25 * Math.PI - age, 0.75 * Math.PI + age);
+      context.stroke();
+      context.strokeStyle = 'rgba(123,223,242,0.84)';
+      context.lineWidth = 3;
+      context.beginPath();
+      context.arc(effect.position.x, effect.position.y, 42, -0.15 * Math.PI - age, 0.65 * Math.PI + age);
+      context.stroke();
+      context.restore();
+      continue;
+    }
+    if (effect.type === 'hit') {
+      context.strokeStyle = color;
+      context.lineWidth = 3;
+      context.beginPath();
+      context.arc(effect.position.x, effect.position.y, 10 + age * 22, 0, Math.PI * 2);
+      context.stroke();
+    } else if (effect.type === 'kill') {
+      context.strokeStyle = 'rgba(255,111,97,0.82)';
+      context.lineWidth = 4;
+      context.beginPath();
+      context.arc(effect.position.x, effect.position.y, 20 + age * 42, 0, Math.PI * 2);
+      context.stroke();
+      context.fillStyle = 'rgba(255,244,163,0.55)';
+      for (let i = 0; i < 5; i += 1) {
+        const angle = age * Math.PI * 2 + i * 1.256;
+        context.beginPath();
+        context.arc(effect.position.x + Math.cos(angle) * 24, effect.position.y + Math.sin(angle) * 18, 3, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+    context.font = effect.type === 'playerDown' ? 'bold 18px sans-serif' : 'bold 16px sans-serif';
+    context.textAlign = 'center';
+    context.lineWidth = 4;
+    context.strokeStyle = 'rgba(42,55,58,0.72)';
+    context.strokeText(effect.text, effect.position.x, y);
+    context.fillStyle = color;
+    context.fillText(effect.text, effect.position.x, y);
+    context.restore();
+  }
+}
+
+function drawProjectile(context: CanvasRenderingContext2D, projectile: GameSnapshot['projectiles'][number]) {
+  const speed = Math.max(1, Math.hypot(projectile.velocity.x, projectile.velocity.y));
+  const dir = { x: projectile.velocity.x / speed, y: projectile.velocity.y / speed };
+  const tail = {
+    x: projectile.position.x - dir.x * 34,
+    y: projectile.position.y - dir.y * 34
+  };
+
+  context.save();
+  const gradient = context.createLinearGradient(tail.x, tail.y, projectile.position.x, projectile.position.y);
+  gradient.addColorStop(0, 'rgba(123,223,242,0)');
+  gradient.addColorStop(0.4, 'rgba(123,223,242,0.5)');
+  gradient.addColorStop(1, 'rgba(255,244,163,0.95)');
+  context.strokeStyle = gradient;
+  context.lineWidth = 5;
+  context.lineCap = 'round';
+  context.beginPath();
+  context.moveTo(tail.x, tail.y);
+  context.lineTo(projectile.position.x, projectile.position.y);
+  context.stroke();
+  context.fillStyle = '#fff4a3';
+  context.shadowColor = '#7bdff2';
+  context.shadowBlur = 10;
+  context.beginPath();
+  context.arc(projectile.position.x, projectile.position.y, 5, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+}
+
+function drawBuildPreview(
+  context: CanvasRenderingContext2D,
+  snapshot: GameSnapshot,
+  player: GameSnapshot['players'][number],
+  selectedFacility: FacilityType,
+  propAtlas: HTMLImageElement | null
+) {
+  const position = {
+    x: player.position.x + player.aim.x * 52,
+    y: player.position.y + player.aim.y * 52
+  };
+  const canAfford = canAffordFacility(player.inventory, selectedFacility);
+  const blocked = isFacilityPlacementBlocked(snapshot, position);
+  const valid = canAfford && !blocked;
+  const color = valid ? '#7edc9b' : '#ff6f61';
+
+  context.save();
+  context.globalAlpha = 0.62;
+  if (selectedFacility === 'medStation' || selectedFacility === 'powerAmplifier') {
+    context.strokeStyle = selectedFacility === 'medStation' ? 'rgba(126,220,155,0.7)' : 'rgba(90,200,200,0.7)';
+    context.lineWidth = 2;
+    context.beginPath();
+    context.arc(position.x, position.y, selectedFacility === 'medStation' ? 74 : 140, 0, Math.PI * 2);
+    context.stroke();
+  }
+  context.strokeStyle = color;
+  context.lineWidth = 3;
+  context.beginPath();
+  context.arc(position.x, position.y, 34, 0, Math.PI * 2);
+  context.stroke();
+  if (propAtlas) {
+    const sprite = FACILITY_SPRITES[selectedFacility];
+    drawAtlasSprite(context, propAtlas, sprite.col, sprite.row, 4, 4, position, sprite.size);
+  } else {
+    context.fillStyle = color;
+    context.beginPath();
+    context.roundRect(position.x - 26, position.y - 18, 52, 36, 6);
+    context.fill();
+  }
+  context.restore();
+}
+
+function isFacilityPlacementBlocked(snapshot: GameSnapshot, position: Vec2) {
+  return snapshot.walls.some((wall) => circleRectClient(position, 28, wall))
+    || snapshot.facilities.some((facility) => {
+      if (facility.type === 'medStation' || facility.type === 'powerAmplifier') return false;
+      return Math.hypot(position.x - facility.position.x, position.y - facility.position.y) < 56;
+    });
+}
+
+function circleRectClient(point: Vec2, radius: number, rect: { x: number; y: number; width: number; height: number }) {
+  const closestX = Math.max(rect.x, Math.min(point.x, rect.x + rect.width));
+  const closestY = Math.max(rect.y, Math.min(point.y, rect.y + rect.height));
+  return Math.hypot(point.x - closestX, point.y - closestY) < radius;
+}
+
+function avatarSprite(avatarId: number) {
+  const safeId = Math.max(0, Math.min(3, Math.round(avatarId)));
+  return {
+    col: safeId % 2,
+    row: Math.floor(safeId / 2),
+    size: 60
+  };
+}
+
+function drawPlayerNameplate(
+  context: CanvasRenderingContext2D,
+  nickname: string,
+  hp: number,
+  position: Vec2,
+  accentColor: string,
+  alive: boolean
+) {
+  const label = fitCanvasText(context, nickname, 92);
+  const x = position.x;
+  const y = position.y - 50;
+  const width = Math.max(78, Math.min(124, context.measureText(label).width + 28));
+  const height = 30;
+  const left = x - width / 2;
+  const top = y - height;
+  const hpRatio = Math.max(0, Math.min(1, hp / 100));
+
+  context.save();
+  context.globalAlpha *= alive ? 1 : 0.72;
+  context.fillStyle = 'rgba(247,251,250,0.9)';
+  context.strokeStyle = accentColor;
+  context.lineWidth = 2;
+  context.beginPath();
+  context.roundRect(left, top, width, height, 8);
+  context.fill();
+  context.stroke();
+
+  context.font = 'bold 11px sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillStyle = alive ? '#17211d' : '#4f5960';
+  context.fillText(alive ? label : `${label} DOWN`, x, top + 10);
+
+  context.fillStyle = 'rgba(23,59,63,0.16)';
+  context.beginPath();
+  context.roundRect(left + 8, top + 20, width - 16, 5, 3);
+  context.fill();
+  context.fillStyle = hpRatio > 0.55 ? '#7edc9b' : hpRatio > 0.25 ? '#f0c86a' : '#ff6f61';
+  context.beginPath();
+  context.roundRect(left + 8, top + 20, (width - 16) * hpRatio, 5, 3);
+  context.fill();
+  context.restore();
+}
+
+function fitCanvasText(context: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  if (context.measureText(text).width <= maxWidth) return text;
+  let result = text;
+  while (result.length > 1 && context.measureText(`${result}...`).width > maxWidth) {
+    result = result.slice(0, -1);
+  }
+  return `${result}...`;
+}
+
+function playerColor(id: string) {
+  const palette = ['#ff8a7a', '#65c7d0', '#f0c86a', '#8fcf8b', '#b49ce2', '#f49ac2', '#82b1ff', '#d4a373'];
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return palette[hash % palette.length];
+}
+
+function getActiveImpact(position: Vec2, effects: VisualEffect[]) {
+  const now = performance.now();
+  return effects
+    .map((effect) => ({
+      ...effect,
+      age: (now - effect.startedAt) / 420
+    }))
+    .filter((effect) => (effect.type === 'hit' || effect.type === 'kill') && effect.age >= 0 && effect.age <= 1)
+    .filter((effect) => Math.hypot(effect.position.x - position.x, effect.position.y - position.y) < 42)
+    .sort((a, b) => b.startedAt - a.startedAt)[0];
+}
+
+function drawImpactFlash(
+  context: CanvasRenderingContext2D,
+  position: Vec2,
+  size: number,
+  age: number,
+  type: VisualEffect['type']
+) {
+  context.save();
+  context.globalAlpha = (1 - age) * (type === 'kill' ? 0.5 : 0.34);
+  context.fillStyle = type === 'kill' ? '#ff6f61' : '#fff4a3';
+  context.beginPath();
+  context.arc(position.x, position.y - size * 0.08, size * 0.34, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+}
+
+function drawSprite(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  col: number,
+  row: number,
+  position: Vec2,
+  size: number
+) {
+  const frameWidth = image.naturalWidth / 2;
+  const frameHeight = image.naturalHeight / 2;
+  context.drawImage(
+    image,
+    col * frameWidth,
+    row * frameHeight,
+    frameWidth,
+    frameHeight,
+    position.x - size / 2,
+    position.y - size / 2,
+    size,
+    size
+  );
+}
+
+function drawAtlasSprite(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  col: number,
+  row: number,
+  columns: number,
+  rows: number,
+  position: Vec2,
+  size: number
+) {
+  const frameWidth = image.naturalWidth / columns;
+  const frameHeight = image.naturalHeight / rows;
+  context.drawImage(
+    image,
+    col * frameWidth,
+    row * frameHeight,
+    frameWidth,
+    frameHeight,
+    position.x - size / 2,
+    position.y - size / 2,
+    size,
+    size
+  );
+}
+
+function drawShadow(context: CanvasRenderingContext2D, position: Vec2, width: number) {
+  context.fillStyle = 'rgba(28,56,58,0.18)';
+  context.beginPath();
+  context.ellipse(position.x, position.y + 18, width * 0.55, width * 0.18, 0, 0, Math.PI * 2);
+  context.fill();
+}
+
+function drawWall(context: CanvasRenderingContext2D, wall: { x: number; y: number; width: number; height: number }) {
+  const gradient = context.createLinearGradient(wall.x, wall.y, wall.x + wall.width, wall.y + wall.height);
+  gradient.addColorStop(0, '#8aa39d');
+  gradient.addColorStop(1, '#6f8580');
+  context.fillStyle = gradient;
+  context.beginPath();
+  context.roundRect(wall.x, wall.y, wall.width, wall.height, 8);
+  context.fill();
+  context.strokeStyle = 'rgba(255,255,255,0.36)';
+  context.lineWidth = 2;
+  context.stroke();
+}
+
+function drawOfficeFloor(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  propAtlas: HTMLImageElement | null
+) {
+  context.fillStyle = '#e8f0ee';
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = 'rgba(255,255,255,0.42)';
+  for (let x = 40; x < width; x += 160) {
+    for (let y = 40; y < height; y += 160) {
+      context.beginPath();
+      context.roundRect(x, y, 72, 72, 14);
+      context.fill();
+    }
+  }
+  context.strokeStyle = 'rgba(23,59,63,0.10)';
+  for (let x = 0; x < width; x += 80) {
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, height);
+    context.stroke();
+  }
+  for (let y = 0; y < height; y += 80) {
+    context.beginPath();
+    context.moveTo(0, y);
+    context.lineTo(width, y);
+    context.stroke();
+  }
+  context.strokeStyle = 'rgba(45,178,170,0.16)';
+  context.lineWidth = 4;
+  context.strokeRect(32, 32, width - 64, height - 64);
+  context.lineWidth = 1;
+  if (propAtlas) {
+    for (const decor of DECOR_SPRITES) {
+      drawAtlasSprite(context, propAtlas, decor.col, decor.row, 4, 4, decor.position, decor.size);
+    }
+  }
+  const zones = [
+    ['오픈 오피스', 80, 80],
+    ['회의실', 720, 90],
+    ['라운지', 1120, 200],
+    ['집중 업무', 420, 720],
+    ['카페', 900, 760],
+    ['창고', 1280, 700]
+  ] as const;
+  context.fillStyle = 'rgba(23,59,63,0.35)';
+  context.font = '18px sans-serif';
+  zones.forEach(([label, x, y]) => context.fillText(label, x, y));
+}
+
+createRoot(document.getElementById('root')!).render(<App />);
