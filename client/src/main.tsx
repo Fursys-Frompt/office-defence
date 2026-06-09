@@ -63,6 +63,12 @@ const AVATARS = [
   { id: 2, label: 'Gold Maker', col: 0, row: 1 },
   { id: 3, label: 'Violet Guard', col: 1, row: 1 }
 ] as const;
+const CANVAS_AVATAR_STYLES = [
+  { hair: '#20282c', cloth: '#f4f7f1', accent: '#6fd7c8', cosmetic: 'pin' },
+  { hair: '#1b2232', cloth: '#ffe4e5', accent: '#63d8ff', cosmetic: 'band' },
+  { hair: '#6c4d3f', cloth: '#fff0dc', accent: '#9edfb5', cosmetic: 'clip' },
+  { hair: '#29334a', cloth: '#ece7ff', accent: '#f2c84e', cosmetic: 'stripe' }
+] as const;
 
 function App() {
   const [nickname, setNickname] = useState('');
@@ -614,27 +620,11 @@ function drawGame(
   }
   for (const resource of snapshot.resources) {
     drawShadow(context, resource.position, 22);
-    if (propAtlas) {
-      const sprite = RESOURCE_SPRITES[resource.type];
-      drawAtlasSprite(context, propAtlas, sprite.col, sprite.row, 4, 4, resource.position, sprite.size);
-    } else {
-      context.fillStyle = resource.type === 'medKit' ? '#e85f5c' : '#e0b84d';
-      context.beginPath();
-      context.arc(resource.position.x, resource.position.y, 10, 0, Math.PI * 2);
-      context.fill();
-    }
+    drawResourceNode(context, resource.type, resource.position);
   }
   for (const facility of snapshot.facilities) {
     drawShadow(context, facility.position, 42);
-    if (propAtlas) {
-      const sprite = FACILITY_SPRITES[facility.type];
-      drawAtlasSprite(context, propAtlas, sprite.col, sprite.row, 4, 4, facility.position, sprite.size);
-    } else {
-      context.fillStyle = facility.type === 'powerAmplifier' ? '#7bdff2' : facility.type === 'medStation' ? '#86e39c' : '#b8a77a';
-      context.beginPath();
-      context.roundRect(facility.position.x - 26, facility.position.y - 18, 52, 36, 6);
-      context.fill();
-    }
+    drawFacilityNode(context, facility.type, facility.position);
     context.fillStyle = 'rgba(255,255,255,0.35)';
     context.fillRect(facility.position.x - 24, facility.position.y - 25, Math.max(0, facility.hp / 160) * 48, 4);
   }
@@ -646,33 +636,14 @@ function drawGame(
     const shake = impact ? Math.sin((performance.now() - impact.startedAt) * 0.09) * (1 - impact.age) * 5 : 0;
     const drawPosition = { x: zombie.position.x + shake, y: zombie.position.y };
     drawShadow(context, drawPosition, zombie.type === 'tanker' ? 44 : 30);
-    if (spriteSheet) {
-      const sprite = zombie.type === 'tanker' ? SPRITES.tanker : zombie.type === 'runner' ? SPRITES.runner : SPRITES.normal;
-      drawSprite(context, spriteSheet, sprite.col, sprite.row, drawPosition, sprite.size);
-      if (impact) drawImpactFlash(context, drawPosition, sprite.size, impact.age, impact.type);
-    } else {
-      context.fillStyle = zombie.type === 'tanker' ? '#6f3d8f' : zombie.type === 'runner' ? '#c84e4e' : '#5fa65d';
-      context.beginPath();
-      context.arc(drawPosition.x, drawPosition.y, zombie.type === 'tanker' ? 22 : 16, 0, Math.PI * 2);
-      context.fill();
-      if (impact) drawImpactFlash(context, drawPosition, zombie.type === 'tanker' ? 52 : 38, impact.age, impact.type);
-    }
+    drawEnemyUnit(context, zombie.type, drawPosition);
+    if (impact) drawImpactFlash(context, drawPosition, zombie.type === 'tanker' ? 52 : 38, impact.age, impact.type);
   }
   for (const player of snapshot.players) {
     context.globalAlpha = player.alive ? 1 : 0.35;
     drawShadow(context, player.position, 28);
     const accentColor = player.id === socket.id ? '#7bdff2' : playerColor(player.id);
-    if (avatarAtlas) {
-      const avatar = avatarSprite(player.avatarId);
-      drawAtlasSprite(context, avatarAtlas, avatar.col, avatar.row, 2, 2, player.position, avatar.size);
-    } else if (spriteSheet) {
-      drawSprite(context, spriteSheet, SPRITES.player.col, SPRITES.player.row, player.position, 60);
-    } else {
-      context.fillStyle = accentColor;
-      context.beginPath();
-      context.arc(player.position.x, player.position.y, 15, 0, Math.PI * 2);
-      context.fill();
-    }
+    drawPlayerUnit(context, player.position, player.avatarId);
     context.strokeStyle = accentColor;
     context.lineWidth = player.id === socket.id ? 3 : 2;
     context.beginPath();
@@ -827,6 +798,327 @@ function drawEquipmentAuras(context: CanvasRenderingContext2D, player: GameSnaps
       context.stroke();
     }
   }
+  context.restore();
+}
+
+function drawPlayerUnit(context: CanvasRenderingContext2D, position: Vec2, avatarId: number) {
+  const style = CANVAS_AVATAR_STYLES[Math.max(0, Math.min(CANVAS_AVATAR_STYLES.length - 1, Math.round(avatarId)))];
+  const x = position.x;
+  const y = position.y;
+
+  context.save();
+  context.translate(x, y);
+
+  context.fillStyle = '#d4e0db';
+  context.strokeStyle = '#172d31';
+  context.lineWidth = 3;
+  context.beginPath();
+  context.ellipse(0, 14, 18, 24, 0, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+
+  context.fillStyle = style.cloth;
+  context.beginPath();
+  context.ellipse(0, 8, 16, 20, 0, 0, Math.PI * 2);
+  context.fill();
+
+  context.fillStyle = style.accent;
+  context.beginPath();
+  context.roundRect(-4, -1, 8, 20, 4);
+  context.fill();
+
+  context.fillStyle = '#c7d4d1';
+  context.beginPath();
+  context.roundRect(-22, 6, 10, 18, 8);
+  context.roundRect(12, 6, 10, 18, 8);
+  context.fill();
+  context.stroke();
+
+  context.fillStyle = '#f4bf88';
+  context.beginPath();
+  context.arc(0, -10, 18, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+
+  context.fillStyle = style.hair;
+  context.beginPath();
+  context.arc(0, -12, 20, Math.PI, Math.PI * 2);
+  context.fill();
+  if (style.cosmetic === 'pin') {
+    context.fillStyle = style.accent;
+    context.beginPath();
+    context.arc(10, -16, 4, 0, Math.PI * 2);
+    context.fill();
+  } else if (style.cosmetic === 'band') {
+    context.strokeStyle = style.accent;
+    context.lineWidth = 5;
+    context.beginPath();
+    context.arc(0, -10, 17, Math.PI * 1.05, Math.PI * 1.95);
+    context.stroke();
+  } else if (style.cosmetic === 'clip') {
+    context.strokeStyle = style.accent;
+    context.lineWidth = 4;
+    context.beginPath();
+    context.moveTo(8, -20);
+    context.lineTo(14, -11);
+    context.stroke();
+  } else {
+    context.fillStyle = style.accent;
+    context.beginPath();
+    context.roundRect(-11, -22, 22, 6, 4);
+    context.fill();
+  }
+
+  context.restore();
+}
+
+function drawEnemyUnit(context: CanvasRenderingContext2D, type: GameSnapshot['zombies'][number]['type'], position: Vec2) {
+  const x = position.x;
+  const y = position.y;
+
+  context.save();
+  context.translate(x, y);
+  context.strokeStyle = '#172d31';
+  context.lineWidth = 3;
+
+  if (type === 'runner') {
+    context.rotate(-0.2);
+    context.fillStyle = '#88d4a9';
+    context.beginPath();
+    context.moveTo(0, -22);
+    context.quadraticCurveTo(18, -8, 12, 20);
+    context.quadraticCurveTo(-6, 26, -18, 8);
+    context.quadraticCurveTo(-16, -10, 0, -22);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#5dc98f';
+    drawEnemyLimb(context, -22, -2, 22, 7, -0.2);
+    drawEnemyLimb(context, 22, 8, 22, 7, -0.22);
+    drawEnemyLimb(context, -18, 18, 18, 6, 0.55);
+    drawEnemyLimb(context, 18, -14, 18, 6, -0.65);
+    context.fillStyle = '#ff6b62';
+    context.beginPath();
+    context.roundRect(-9, -2, 18, 7, 4);
+    context.fill();
+  } else if (type === 'tanker') {
+    context.fillStyle = '#8f78bd';
+    context.beginPath();
+    context.ellipse(0, 0, 30, 24, 0, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.fillStyle = 'rgba(255,255,255,0.08)';
+    context.beginPath();
+    context.ellipse(0, -4, 34, 28, 0, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#7a6baa';
+    drawEnemyLimb(context, -26, -8, 22, 10, 0);
+    drawEnemyLimb(context, 26, -8, 22, 10, 0);
+    drawEnemyLimb(context, -16, 22, 18, 8, 0);
+    drawEnemyLimb(context, 16, 22, 18, 8, 0);
+    context.fillStyle = '#2b2642';
+    context.beginPath();
+    context.roundRect(-11, -4, 22, 8, 4);
+    context.fill();
+  } else {
+    context.fillStyle = '#92d4a6';
+    context.beginPath();
+    context.ellipse(0, 0, 21, 23, 0, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.fillStyle = 'rgba(255,255,255,0.08)';
+    context.beginPath();
+    context.ellipse(0, -2, 24, 26, 0, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#79c994';
+    drawEnemyLimb(context, -19, -4, 18, 8, 0);
+    drawEnemyLimb(context, 19, -4, 18, 8, 0);
+    drawEnemyLimb(context, -14, 16, 15, 7, 0.35);
+    drawEnemyLimb(context, 14, 16, 15, 7, -0.35);
+    context.fillStyle = '#172d31';
+    context.beginPath();
+    context.roundRect(-7, -3, 14, 5, 3);
+    context.fill();
+  }
+
+  context.fillStyle = '#e9fff0';
+  context.beginPath();
+  context.arc(type === 'runner' ? 0 : 2, type === 'runner' ? 8 : 7, type === 'tanker' ? 5 : 4, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.restore();
+}
+
+function drawEnemyLimb(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  rotation: number
+) {
+  context.save();
+  context.translate(x, y);
+  context.rotate(rotation);
+  context.beginPath();
+  context.roundRect(-width / 2, -height / 2, width, height, height / 2);
+  context.fill();
+  context.stroke();
+  context.restore();
+}
+
+function drawResourceNode(context: CanvasRenderingContext2D, type: ResourceType, position: Vec2) {
+  const x = position.x;
+  const y = position.y;
+  context.save();
+  context.translate(x, y);
+  context.strokeStyle = '#172d31';
+  context.lineWidth = 2.5;
+
+  if (type === 'chairParts') {
+    context.fillStyle = '#35c7bd';
+    context.beginPath();
+    context.roundRect(-11, -11, 22, 16, 6);
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.moveTo(-6, 6);
+    context.lineTo(-8, 14);
+    context.moveTo(6, 6);
+    context.lineTo(8, 14);
+    context.stroke();
+  } else if (type === 'deskParts') {
+    context.fillStyle = '#e6be60';
+    context.beginPath();
+    context.roundRect(-12, -6, 24, 14, 5);
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.moveTo(-7, 8);
+    context.lineTo(-9, 14);
+    context.moveTo(7, 8);
+    context.lineTo(9, 14);
+    context.stroke();
+  } else if (type === 'partitionMaterial') {
+    context.fillStyle = '#a7debd';
+    context.beginPath();
+    context.roundRect(-6, -13, 12, 26, 4);
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.moveTo(0, -13);
+    context.lineTo(0, 13);
+    context.stroke();
+  } else if (type === 'powerModule') {
+    context.fillStyle = '#80dff0';
+    context.beginPath();
+    context.roundRect(-11, -11, 22, 22, 6);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#ffe06c';
+    context.beginPath();
+    context.moveTo(1, -8);
+    context.lineTo(-5, 1);
+    context.lineTo(0, 1);
+    context.lineTo(-2, 8);
+    context.lineTo(7, -1);
+    context.lineTo(1, -1);
+    context.closePath();
+    context.fill();
+  } else {
+    context.fillStyle = '#ffffff';
+    context.beginPath();
+    context.roundRect(-12, -12, 24, 24, 6);
+    context.fill();
+    context.stroke();
+    context.strokeStyle = '#f56e68';
+    context.lineWidth = 5;
+    context.beginPath();
+    context.moveTo(0, -7);
+    context.lineTo(0, 7);
+    context.moveTo(-7, 0);
+    context.lineTo(7, 0);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawFacilityNode(context: CanvasRenderingContext2D, type: FacilityType, position: Vec2) {
+  const x = position.x;
+  const y = position.y;
+  context.save();
+  context.translate(x, y);
+  context.strokeStyle = '#172d31';
+  context.lineWidth = 3;
+
+  if (type === 'partitionBarricade') {
+    context.fillStyle = '#98dcb7';
+    context.beginPath();
+    context.roundRect(-22, -10, 44, 20, 8);
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.moveTo(-10, 10);
+    context.lineTo(-12, 18);
+    context.moveTo(10, 10);
+    context.lineTo(12, 18);
+    context.stroke();
+  } else if (type === 'deskBarricade') {
+    context.fillStyle = '#e5c46a';
+    context.beginPath();
+    context.roundRect(-26, -12, 52, 24, 8);
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.moveTo(-18, 12);
+    context.lineTo(-22, 22);
+    context.moveTo(18, 12);
+    context.lineTo(22, 22);
+    context.stroke();
+  } else if (type === 'medStation') {
+    context.fillStyle = '#9be0b8';
+    context.beginPath();
+    context.roundRect(-22, -18, 44, 36, 10);
+    context.fill();
+    context.stroke();
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 6;
+    context.beginPath();
+    context.moveTo(0, -8);
+    context.lineTo(0, 8);
+    context.moveTo(-8, 0);
+    context.lineTo(8, 0);
+    context.stroke();
+    context.strokeStyle = 'rgba(155, 224, 184, 0.45)';
+    context.lineWidth = 2;
+    context.beginPath();
+    context.arc(0, 0, 28, 0, Math.PI * 2);
+    context.stroke();
+  } else {
+    context.fillStyle = '#80dff0';
+    context.beginPath();
+    context.moveTo(0, -24);
+    context.lineTo(20, -10);
+    context.lineTo(20, 10);
+    context.lineTo(0, 24);
+    context.lineTo(-20, 10);
+    context.lineTo(-20, -10);
+    context.closePath();
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#ffe06c';
+    context.beginPath();
+    context.moveTo(3, -14);
+    context.lineTo(-6, -1);
+    context.lineTo(0, -1);
+    context.lineTo(-4, 12);
+    context.lineTo(9, -2);
+    context.lineTo(2, -2);
+    context.closePath();
+    context.fill();
+  }
+
   context.restore();
 }
 
