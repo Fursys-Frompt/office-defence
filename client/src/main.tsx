@@ -7,12 +7,13 @@ import type {
   FeedbackEvent,
   GameSnapshot,
   PlayerInput,
-  ResourceInventory,
   ResourceType,
   RoomSettings,
   ServerToClientEvents,
   Vec2
 } from '../../shared/src/types';
+import { EQUIPMENT_DESCRIPTIONS, EQUIPMENT_LABELS, RESOURCE_LABELS, resourceKeys } from '../../shared/src/gameRules';
+import { ConceptArtBoard } from './ConceptArtBoard';
 import avatarAtlasUrl from './assets/office-player-avatars.png';
 import propAtlasUrl from './assets/office-props-atlas.png';
 import spriteSheetUrl from './assets/office-survival-sprites.png';
@@ -26,27 +27,6 @@ type VisualEffect = Omit<FeedbackEvent, 'type'> & {
 type AudioCue = FeedbackEvent['type'] | 'shoot' | 'melee';
 
 const socket: GameSocket = io();
-const facilityKeys: FacilityType[] = ['partitionBarricade', 'deskBarricade', 'medStation', 'powerAmplifier'];
-const resourceKeys: ResourceType[] = ['chairParts', 'deskParts', 'partitionMaterial', 'powerModule', 'medKit'];
-const RESOURCE_LABELS: Record<ResourceType, string> = {
-  chairParts: 'Chair',
-  deskParts: 'Desk',
-  partitionMaterial: 'Panel',
-  powerModule: 'Power',
-  medKit: 'Med'
-};
-const FACILITY_LABELS: Record<FacilityType, string> = {
-  partitionBarricade: 'Panel',
-  deskBarricade: 'Desk',
-  medStation: 'Med Box',
-  powerAmplifier: 'Amp'
-};
-const FACILITY_COSTS: Record<FacilityType, Partial<ResourceInventory>> = {
-  partitionBarricade: { chairParts: 1, partitionMaterial: 1 },
-  deskBarricade: { deskParts: 2, partitionMaterial: 1 },
-  medStation: { medKit: 1, deskParts: 1 },
-  powerAmplifier: { powerModule: 1, partitionMaterial: 2 }
-};
 const SPRITES = {
   player: { col: 0, row: 0, size: 70 },
   normal: { col: 1, row: 0, size: 68 },
@@ -114,6 +94,7 @@ function App() {
   }, []);
 
   const me = snapshot?.players.find((player) => player.id === playerId);
+  const readyCount = snapshot?.players.filter((player) => player.ready).length ?? 0;
 
   if (!snapshot || !me) {
     return (
@@ -122,14 +103,15 @@ function App() {
           <div>
             <p className="eyebrow">FURSYS Smart Office</p>
             <h1>Zombie Office Survival</h1>
+            <p className="subtitle">Collect office parts, build a defensive line, and chain kills before the next wave overwhelms the room.</p>
           </div>
           <label>
-            닉네임
+            Nickname
             <input value={nickname} maxLength={16} onChange={(event) => setNickname(event.target.value)} placeholder="Survivor" />
           </label>
           <label>
-            방 코드
-            <input value={roomInput} maxLength={8} onChange={(event) => setRoomInput(event.target.value.toUpperCase())} placeholder="새 방은 비워두기" />
+            Room code
+            <input value={roomInput} maxLength={8} onChange={(event) => setRoomInput(event.target.value.toUpperCase())} placeholder="Leave blank to create" />
           </label>
           <div className="avatar-picker" aria-label="Avatar">
             {AVATARS.map((avatar) => (
@@ -158,9 +140,13 @@ function App() {
                 backgroundPosition: spriteBackgroundPosition(AVATARS[avatarId].col, AVATARS[avatarId].row, 2, 2)
               }}
             />
-            <strong>{AVATARS[avatarId].label}</strong>
+            <div>
+              <strong>{AVATARS[avatarId].label}</strong>
+              <span>Selected survivor avatar</span>
+            </div>
           </div>
           <button
+            className="primary cta"
             onClick={() =>
               socket.emit('joinRoom', {
                 nickname: nickname || 'Survivor',
@@ -170,7 +156,7 @@ function App() {
               })
             }
           >
-            입장
+            Enter room
           </button>
           {error && <p className="error">{error}</p>}
         </section>
@@ -184,23 +170,28 @@ function App() {
         <section className="panel">
           <div className="room-header">
             <div>
-              <p className="eyebrow">Room</p>
+              <p className="eyebrow">Mission Room</p>
               <h1>{roomId}</h1>
+              <div className="room-meta">
+                <span>{snapshot.players.length}/{snapshot.settings.maxPlayers} Players</span>
+                <span>{readyCount}/{snapshot.players.length} Ready</span>
+                <span>{Math.round(snapshot.settings.gameDurationSec / 60)} min</span>
+              </div>
             </div>
-            <button onClick={() => socket.emit('leaveRoom')}>나가기</button>
+            <button onClick={() => socket.emit('leaveRoom')}>Leave</button>
           </div>
           <div className="player-list">
             {snapshot.players.map((player) => (
               <div key={player.id} className="player-row">
-                <span>{player.nickname}{player.host ? ' / 방장' : ''}</span>
-                <strong>{player.ready ? 'READY' : 'WAIT'}</strong>
+                <span>{player.nickname}{player.host ? ' / Host' : ''}</span>
+                <strong className={player.ready ? 'status ready' : 'status wait'}>{player.ready ? 'READY' : 'WAIT'}</strong>
               </div>
             ))}
           </div>
           {me.host && (
             <div className="settings">
               <label>
-                최대 인원
+                Max players
                 <input
                   type="number"
                   min={2}
@@ -210,7 +201,7 @@ function App() {
                 />
               </label>
               <label>
-                게임 시간(초)
+                Duration (sec)
                 <input
                   type="number"
                   min={60}
@@ -228,11 +219,11 @@ function App() {
                 />
                 PVP
               </label>
-              <button onClick={() => socket.emit('updateSettings', settings)}>설정 적용</button>
+              <button onClick={() => socket.emit('updateSettings', settings)}>Apply settings</button>
             </div>
           )}
           <button className="primary" onClick={() => socket.emit('setReady', !me.ready)}>
-            {me.ready ? 'Ready 취소' : 'Ready'}
+            {me.ready ? 'Cancel ready' : 'Ready'}
           </button>
         </section>
       </main>
@@ -245,19 +236,19 @@ function App() {
       <main className="shell result">
         <section className="panel">
           <p className="eyebrow">Result</p>
-          <h1>랭킹</h1>
+          <h1>Result</h1>
           <div className="ranking">
             {ranking.map((player, index) => (
               <div key={player.id} className="rank-row">
-                <strong>{index + 1}</strong>
+                <strong className="rank-place">{index + 1}</strong>
                 <span>{player.nickname}</span>
-                <span>{player.score}점</span>
-                <span>{player.kills}킬</span>
-                <span>{player.survivalSec}초</span>
+                <span>{player.score} pt</span>
+                <span>{player.kills} kills</span>
+                <span>{player.survivalSec}s</span>
               </div>
             ))}
           </div>
-          <button onClick={() => window.location.reload()}>로비로</button>
+          <button onClick={() => window.location.reload()}>Back to lobby</button>
         </section>
       </main>
     );
@@ -265,22 +256,15 @@ function App() {
 
   return <GameView snapshot={snapshot} playerId={playerId} />;
 }
-
 function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: string }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const latestRender = useRef<{ snapshot: GameSnapshot; me: NonNullable<typeof snapshot.players[number]> } | null>(null);
   const pressed = useRef(new Set<string>());
   const pointer = useRef<Vec2>({ x: 1, y: 0 });
-  const shoot = useRef(false);
-  const touchAttack = useRef(false);
-  const melee = useRef(false);
-  const build = useRef<FacilityType | undefined>(undefined);
   const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
   const seenFeedback = useRef(new Set<string>());
   const visualEffects = useRef<VisualEffect[]>([]);
   const audio = useRef(createAudioEngine());
-  const [selectedFacility, setSelectedFacility] = useState<FacilityType>('partitionBarricade');
-  const [buildMode, setBuildMode] = useState(false);
   const spriteSheet = useGameImage(spriteSheetUrl);
   const propAtlas = useGameImage(propAtlasUrl);
   const avatarAtlas = useGameImage(avatarAtlasUrl);
@@ -290,12 +274,6 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     const onKeyDown = (event: KeyboardEvent) => {
       audio.current.unlock();
       pressed.current.add(event.code);
-      if (event.code === 'Digit1') { setSelectedFacility('partitionBarricade'); setBuildMode(true); }
-      if (event.code === 'Digit2') { setSelectedFacility('deskBarricade'); setBuildMode(true); }
-      if (event.code === 'Digit3') { setSelectedFacility('medStation'); setBuildMode(true); }
-      if (event.code === 'Digit4') { setSelectedFacility('powerAmplifier'); setBuildMode(true); }
-      if (event.code === 'Escape') setBuildMode(false);
-      if (event.code === 'KeyB' && buildMode) build.current = selectedFacility;
     };
     const onKeyUp = (event: KeyboardEvent) => pressed.current.delete(event.code);
     window.addEventListener('keydown', onKeyDown);
@@ -304,40 +282,20 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [selectedFacility, buildMode]);
+  }, []);
 
   useEffect(() => {
     const id = window.setInterval(() => {
       const move = keyboardMove(pressed.current, joystick.current?.value);
-      const spaceAttack = pressed.current.has('Space');
-      const autoAttack = spaceAttack || touchAttack.current;
       const autoAim = me ? getAutoAim(snapshot, me.position) : undefined;
-      const aim = autoAttack && autoAim ? autoAim.direction : pointer.current;
+      const aim = autoAim ? autoAim.direction : pointer.current;
       const input: PlayerInput = {
         move,
         aim,
-        shooting: shoot.current || touchAttack.current || (spaceAttack && (!autoAim || autoAim.distance >= 68)),
-        melee: melee.current || (autoAttack && Boolean(autoAim && autoAim.distance < 68)),
-        build: build.current
+        shooting: false,
+        melee: false
       };
-      if (input.shooting && canPlayLocalCue('shoot')) audio.current.play('shoot');
-      if (input.melee && canPlayLocalCue('melee')) {
-        audio.current.play('melee');
-        if (me) {
-          const now = performance.now();
-          visualEffects.current.push({
-            id: `local_melee_${now}`,
-            type: 'meleeSwing',
-            position: { x: me.position.x + aim.x * 36, y: me.position.y + aim.y * 36 },
-            text: '',
-            startedAt: now
-          });
-          visualEffects.current = visualEffects.current.filter((effect) => now - effect.startedAt < 900);
-        }
-      }
       socket.emit('input', input);
-      melee.current = false;
-      build.current = undefined;
     }, 50);
     return () => window.clearInterval(id);
   }, [snapshot, me]);
@@ -373,7 +331,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           spriteSheet,
           propAtlas,
           avatarAtlas,
-          buildMode ? selectedFacility : undefined,
+          undefined,
           visualEffects.current
         );
       }
@@ -381,7 +339,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     };
     frame = requestAnimationFrame(render);
     return () => cancelAnimationFrame(frame);
-  }, [spriteSheet, propAtlas, avatarAtlas, selectedFacility, buildMode]);
+  }, [spriteSheet, propAtlas, avatarAtlas]);
 
   useEffect(() => {
     const now = performance.now();
@@ -402,6 +360,11 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     const sorted = [...snapshot.players].sort((a, b) => b.score - a.score).slice(0, 4);
     return sorted;
   }, [snapshot.players]);
+  const hp = Math.ceil(me?.hp ?? 0);
+  const maxHp = Math.max(1, Math.ceil(me?.maxHp ?? 100));
+  const hpPercent = Math.max(0, Math.min(100, (hp / maxHp) * 100));
+  const combo = me?.combo ?? 0;
+  const threat = getThreatLabel(snapshot.wave);
 
   return (
     <main className="game">
@@ -417,19 +380,21 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         }}
         onMouseDown={() => {
           audio.current.unlock();
-          shoot.current = true;
         }}
-        onMouseUp={() => {
-          shoot.current = false;
-        }}
-        onTouchStart={(event) => handleTouch(event, joystick, touchAttack)}
-        onTouchMove={(event) => handleTouch(event, joystick, touchAttack)}
-        onTouchEnd={(event) => handleTouch(event, joystick, touchAttack)}
+        onTouchStart={(event) => handleTouch(event, joystick)}
+        onTouchMove={(event) => handleTouch(event, joystick)}
+        onTouchEnd={(event) => handleTouch(event, joystick)}
       />
-      <section className="hud top-left">
-        <strong>{me?.nickname}</strong>
-        <span>HP {Math.ceil(me?.hp ?? 0)}</span>
-        <span>{me?.score ?? 0}점</span>
+      <div className={hpPercent <= 30 ? 'damage-vignette visible' : 'damage-vignette'} />
+      <section className={`hud player-hud top-left ${hpPercent <= 30 ? 'danger' : ''}`}>
+        <div className="player-summary">
+          <strong>{me?.nickname}</strong>
+          <span>{me?.score ?? 0} pt</span>
+        </div>
+        <div className="hp-meter" aria-label={`HP ${hp} of ${maxHp}`}>
+          <span style={{ width: `${hpPercent}%` }} />
+        </div>
+        <b>HP {hp}/{maxHp}</b>
       </section>
       <section className="hud inventory-hud">
         {resourceKeys.map((resource) => (
@@ -445,42 +410,40 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           </span>
         ))}
       </section>
-      <section className="hud top-right">
-        <span>{snapshot.remainingSec}초</span>
-        <span>Wave {snapshot.wave}</span>
-        <span>{snapshot.settings.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
+      <section className="hud mission-hud top-right">
+        <span><b>{snapshot.remainingSec}</b>s</span>
+        <span>Wave <b>{snapshot.wave}</b></span>
+        <span className={`threat ${threat.tone}`}>Threat {threat.label}</span>
+        <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
       </section>
+      {combo >= 2 && (
+        <section className="hud combo-hud">
+          <strong>x{combo}</strong>
+          <span>CHAIN</span>
+        </section>
+      )}
       <section className="hud ranking-mini">
         {hud.map((player, index) => (
           <span key={player.id}>{index + 1}. {player.nickname} {player.score}</span>
         ))}
       </section>
       {snapshot.phase === 'countdown' && <div className="countdown">{snapshot.countdown}</div>}
-      <section className="build-bar">
-        {facilityKeys.map((facility, index) => (
-          <button
-            key={facility}
-            className={`facility-button ${buildMode && selectedFacility === facility ? 'active' : ''} ${me && !canAffordFacility(me.inventory, facility) ? 'disabled' : ''}`}
-            onClick={() => {
-              audio.current.unlock();
-              setBuildMode((enabled) => !(enabled && selectedFacility === facility));
-              setSelectedFacility(facility);
-            }}
-          >
-            <strong>{index + 1}</strong>
-            <span>{FACILITY_LABELS[facility]}</span>
-            <small>{formatFacilityCost(facility)}</small>
-          </button>
+      <section className="equipment-bar">
+        <div className="build-state">
+          <strong>Auto Gear</strong>
+          <span>Collect parts to upgrade</span>
+        </div>
+        {resourceKeys.map((resource) => (
+          <div key={resource} className={`equipment-chip ${(me?.inventory[resource] ?? 0) > 0 ? 'active' : ''}`}>
+            <strong>Lv {me?.inventory[resource] ?? 0}</strong>
+            <span>{EQUIPMENT_LABELS[resource]}</span>
+            <small>{EQUIPMENT_DESCRIPTIONS[resource]}</small>
+          </div>
         ))}
-        <button
-          disabled={!me || !buildMode || !canAffordFacility(me.inventory, selectedFacility)}
-          onClick={() => { build.current = selectedFacility; }}
-        >
-          Build
-        </button>
-        <button onClick={() => setBuildMode(false)}>Cancel</button>
-        <button onClick={() => { melee.current = true; }}>근접</button>
       </section>
+      <div className="touch-affordance" aria-hidden="true">
+        <span />
+      </div>
     </main>
   );
 }
@@ -493,15 +456,11 @@ function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
   };
 }
 
-function canAffordFacility(inventory: ResourceInventory, facility: FacilityType) {
-  const cost = FACILITY_COSTS[facility];
-  return Object.entries(cost).every(([resource, amount]) => inventory[resource as ResourceType] >= amount);
-}
-
-function formatFacilityCost(facility: FacilityType) {
-  return Object.entries(FACILITY_COSTS[facility])
-    .map(([resource, amount]) => `${RESOURCE_LABELS[resource as ResourceType]}${amount}`)
-    .join(' ');
+function getThreatLabel(wave: number) {
+  if (wave >= 8) return { label: 'EXTREME', tone: 'extreme' };
+  if (wave >= 5) return { label: 'HIGH', tone: 'high' };
+  if (wave >= 3) return { label: 'MID', tone: 'mid' };
+  return { label: 'LOW', tone: 'low' };
 }
 
 function spriteBackgroundPosition(col: number, row: number, columns: number, rows: number) {
@@ -512,15 +471,13 @@ function spriteBackgroundPosition(col: number, row: number, columns: number, row
 
 function handleTouch(
   event: React.TouchEvent<HTMLCanvasElement>,
-  joystick: React.MutableRefObject<{ id: number; origin: Vec2; value: Vec2 } | null>,
-  touchAttack: React.MutableRefObject<boolean>
+  joystick: React.MutableRefObject<{ id: number; origin: Vec2; value: Vec2 } | null>
 ) {
   createAudioEngine().unlock();
   event.preventDefault();
   const rect = event.currentTarget.getBoundingClientRect();
   const touches = Array.from(event.touches);
-  touchAttack.current = touches.some((touch) => touch.clientX - rect.left > rect.width * 0.55);
-  const left = touches.find((touch) => touch.clientX - rect.left < rect.width * 0.45);
+  const left = touches.find((touch) => touch.clientX - rect.left < rect.width * 0.7);
   if (!left) {
     joystick.current = null;
     return;
@@ -684,10 +641,6 @@ function drawGame(
   for (const projectile of snapshot.projectiles) {
     drawProjectile(context, projectile);
   }
-  const currentPlayer = snapshot.players.find((player) => player.id === socket.id);
-  if (currentPlayer?.alive && selectedFacility) {
-    drawBuildPreview(context, snapshot, currentPlayer, selectedFacility, propAtlas);
-  }
   for (const zombie of snapshot.zombies) {
     const impact = getActiveImpact(zombie.position, effects);
     const shake = impact ? Math.sin((performance.now() - impact.startedAt) * 0.09) * (1 - impact.age) * 5 : 0;
@@ -731,6 +684,7 @@ function drawGame(
     context.moveTo(player.position.x, player.position.y);
     context.lineTo(player.position.x + player.aim.x * 24, player.position.y + player.aim.y * 24);
     context.stroke();
+    drawEquipmentAuras(context, player);
     drawPlayerNameplate(context, player.nickname, player.hp, player.position, accentColor, player.alive);
     context.globalAlpha = 1;
   }
@@ -835,60 +789,45 @@ function drawProjectile(context: CanvasRenderingContext2D, projectile: GameSnaps
   context.restore();
 }
 
-function drawBuildPreview(
-  context: CanvasRenderingContext2D,
-  snapshot: GameSnapshot,
-  player: GameSnapshot['players'][number],
-  selectedFacility: FacilityType,
-  propAtlas: HTMLImageElement | null
-) {
-  const position = {
-    x: player.position.x + player.aim.x * 52,
-    y: player.position.y + player.aim.y * 52
-  };
-  const canAfford = canAffordFacility(player.inventory, selectedFacility);
-  const blocked = isFacilityPlacementBlocked(snapshot, position);
-  const valid = canAfford && !blocked;
-  const color = valid ? '#7edc9b' : '#ff6f61';
+function drawEquipmentAuras(context: CanvasRenderingContext2D, player: GameSnapshot['players'][number]) {
+  const chairLevel = player.inventory.chairParts;
+  const panelLevel = player.inventory.partitionMaterial;
+  const powerLevel = player.inventory.powerModule;
+  const now = performance.now() / 1000;
 
   context.save();
-  context.globalAlpha = 0.62;
-  if (selectedFacility === 'medStation' || selectedFacility === 'powerAmplifier') {
-    context.strokeStyle = selectedFacility === 'medStation' ? 'rgba(126,220,155,0.7)' : 'rgba(90,200,200,0.7)';
-    context.lineWidth = 2;
+  if (panelLevel > 0) {
+    context.strokeStyle = 'rgba(126, 220, 155, 0.26)';
+    context.lineWidth = Math.min(8, 2 + panelLevel * 0.6);
     context.beginPath();
-    context.arc(position.x, position.y, selectedFacility === 'medStation' ? 74 : 140, 0, Math.PI * 2);
+    context.arc(player.position.x, player.position.y, 92 + panelLevel * 8, 0, Math.PI * 2);
     context.stroke();
   }
-  context.strokeStyle = color;
-  context.lineWidth = 3;
-  context.beginPath();
-  context.arc(position.x, position.y, 34, 0, Math.PI * 2);
-  context.stroke();
-  if (propAtlas) {
-    const sprite = FACILITY_SPRITES[selectedFacility];
-    drawAtlasSprite(context, propAtlas, sprite.col, sprite.row, 4, 4, position, sprite.size);
-  } else {
-    context.fillStyle = color;
+  if (powerLevel > 0) {
+    context.strokeStyle = 'rgba(123, 223, 242, 0.34)';
+    context.lineWidth = 3;
+    context.setLineDash([8, 8]);
     context.beginPath();
-    context.roundRect(position.x - 26, position.y - 18, 52, 36, 6);
-    context.fill();
+    context.arc(player.position.x, player.position.y, 34 + Math.min(powerLevel, 10) * 2, now, Math.PI * 2 + now);
+    context.stroke();
+    context.setLineDash([]);
+  }
+  if (chairLevel > 0) {
+    context.fillStyle = 'rgba(240, 200, 106, 0.86)';
+    context.strokeStyle = 'rgba(23, 59, 63, 0.38)';
+    const count = Math.min(5, 1 + Math.floor(chairLevel / 2));
+    const radius = 58 + chairLevel * 7;
+    for (let i = 0; i < count; i += 1) {
+      const angle = now * 3.4 + (Math.PI * 2 * i) / count;
+      const x = player.position.x + Math.cos(angle) * Math.min(radius, 96);
+      const y = player.position.y + Math.sin(angle) * Math.min(radius, 96);
+      context.beginPath();
+      context.roundRect(x - 8, y - 6, 16, 12, 3);
+      context.fill();
+      context.stroke();
+    }
   }
   context.restore();
-}
-
-function isFacilityPlacementBlocked(snapshot: GameSnapshot, position: Vec2) {
-  return snapshot.walls.some((wall) => circleRectClient(position, 28, wall))
-    || snapshot.facilities.some((facility) => {
-      if (facility.type === 'medStation' || facility.type === 'powerAmplifier') return false;
-      return Math.hypot(position.x - facility.position.x, position.y - facility.position.y) < 56;
-    });
-}
-
-function circleRectClient(point: Vec2, radius: number, rect: { x: number; y: number; width: number; height: number }) {
-  const closestX = Math.max(rect.x, Math.min(point.x, rect.x + rect.width));
-  const closestY = Math.max(rect.y, Math.min(point.y, rect.y + rect.height));
-  return Math.hypot(point.x - closestX, point.y - closestY) < radius;
 }
 
 function avatarSprite(avatarId: number) {
@@ -1095,16 +1034,21 @@ function drawOfficeFloor(
     }
   }
   const zones = [
-    ['오픈 오피스', 80, 80],
-    ['회의실', 720, 90],
-    ['라운지', 1120, 200],
-    ['집중 업무', 420, 720],
-    ['카페', 900, 760],
-    ['창고', 1280, 700]
+    ['Open Office', 80, 80],
+    ['Meeting Room', 720, 90],
+    ['Lounge', 1120, 200],
+    ['Focus Zone', 420, 720],
+    ['Cafe', 900, 760],
+    ['Storage', 1280, 700]
   ] as const;
   context.fillStyle = 'rgba(23,59,63,0.35)';
   context.font = '18px sans-serif';
   zones.forEach(([label, x, y]) => context.fillText(label, x, y));
 }
 
-createRoot(document.getElementById('root')!).render(<App />);
+function Root() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('concept') === '1' ? <ConceptArtBoard /> : <App />;
+}
+
+createRoot(document.getElementById('root')!).render(<Root />);
