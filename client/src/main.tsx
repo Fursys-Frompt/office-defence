@@ -35,6 +35,10 @@ const SPRITES = {
 } as const;
 const WALK_FRAME_COUNT = 4;
 const MOVEMENT_HOLD_MS = 180;
+const INPUT_SEND_MS = 33;
+const CAMERA_FOLLOW_AMOUNT = 0.62;
+const LOCAL_PLAYER_FOLLOW_AMOUNT = 0.84;
+const REMOTE_ENTITY_FOLLOW_AMOUNT = 0.36;
 const RESOURCE_SPRITES: Record<ResourceType, { col: number; row: number; size: number }> = {
   chairParts: { col: 0, row: 0, size: 34 },
   deskParts: { col: 1, row: 0, size: 34 },
@@ -313,7 +317,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         melee: false
       };
       socket.emit('input', input);
-    }, 50);
+    }, INPUT_SEND_MS);
     return () => window.clearInterval(id);
   }, [snapshot, me]);
 
@@ -339,7 +343,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           canvas.height = targetHeight;
         }
         context.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const camera = smoothRenderPosition(`camera:${current.me.id}`, current.me.position, 0.3);
+        const camera = smoothRenderPosition(`camera:${current.me.id}`, current.me.position, CAMERA_FOLLOW_AMOUNT);
         drawGame(
           context,
           rect.width,
@@ -645,7 +649,7 @@ function drawGame(
     const impact = getActiveImpact(zombie.position, effects);
     const shake = impact ? Math.sin((performance.now() - impact.startedAt) * 0.09) * (1 - impact.age) * 5 : 0;
     const now = performance.now();
-    const smoothedPosition = smoothRenderPosition(`zombie:${zombie.id}`, zombie.position, 0.34);
+    const smoothedPosition = smoothRenderPosition(`zombie:${zombie.id}`, zombie.position, REMOTE_ENTITY_FOLLOW_AMOUNT);
     const drawPosition = { x: smoothedPosition.x + shake, y: smoothedPosition.y };
     const sprite = SPRITES[zombie.type];
     const motion = sampleMotion(`zombie:${zombie.id}`, zombie.position, now);
@@ -663,7 +667,11 @@ function drawGame(
     const frame = moving ? walkFrame(now, SPRITES.player.frameMs, motion.lastMovedAt) : 0;
     const pulse = moving ? framePulse(frame) : 0;
     const renderDirection = moving ? motion.direction : player.aim;
-    const drawPosition = smoothRenderPosition(`player:${player.id}`, player.position, player.id === socket.id ? 0.42 : 0.34);
+    const drawPosition = smoothRenderPosition(
+      `player:${player.id}`,
+      player.position,
+      player.id === socket.id ? LOCAL_PLAYER_FOLLOW_AMOUNT : REMOTE_ENTITY_FOLLOW_AMOUNT
+    );
     context.globalAlpha = player.alive ? 1 : 0.35;
     drawShadow(context, drawPosition, 28 + pulse * 3);
     const accentColor = player.id === socket.id ? '#7bdff2' : playerColor(player.id);
