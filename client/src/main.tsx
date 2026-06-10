@@ -79,6 +79,7 @@ type MotionSample = {
 };
 
 const motionSamples = new Map<string, MotionSample>();
+const renderPositions = new Map<string, Vec2>();
 
 function App() {
   const [nickname, setNickname] = useState('');
@@ -308,7 +309,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       const input: PlayerInput = {
         move,
         aim,
-        shooting: false,
+        shooting: Boolean(autoAim && autoAim.distance <= 640),
         melee: false
       };
       socket.emit('input', input);
@@ -338,12 +339,13 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           canvas.height = targetHeight;
         }
         context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const camera = smoothRenderPosition(`camera:${current.me.id}`, current.me.position, 0.3);
         drawGame(
           context,
           rect.width,
           rect.height,
           current.snapshot,
-          current.me.position,
+          camera,
           spriteSheet,
           propAtlas,
           avatarAtlas,
@@ -643,7 +645,8 @@ function drawGame(
     const impact = getActiveImpact(zombie.position, effects);
     const shake = impact ? Math.sin((performance.now() - impact.startedAt) * 0.09) * (1 - impact.age) * 5 : 0;
     const now = performance.now();
-    const drawPosition = { x: zombie.position.x + shake, y: zombie.position.y };
+    const smoothedPosition = smoothRenderPosition(`zombie:${zombie.id}`, zombie.position, 0.34);
+    const drawPosition = { x: smoothedPosition.x + shake, y: smoothedPosition.y };
     const sprite = SPRITES[zombie.type];
     const motion = sampleMotion(`zombie:${zombie.id}`, zombie.position, now);
     const frame = walkFrame(now, sprite.frameMs, motion.lastMovedAt);
@@ -660,26 +663,28 @@ function drawGame(
     const frame = moving ? walkFrame(now, SPRITES.player.frameMs, motion.lastMovedAt) : 0;
     const pulse = moving ? framePulse(frame) : 0;
     const renderDirection = moving ? motion.direction : player.aim;
+    const drawPosition = smoothRenderPosition(`player:${player.id}`, player.position, player.id === socket.id ? 0.42 : 0.34);
     context.globalAlpha = player.alive ? 1 : 0.35;
-    drawShadow(context, player.position, 28 + pulse * 3);
+    drawShadow(context, drawPosition, 28 + pulse * 3);
     const accentColor = player.id === socket.id ? '#7bdff2' : playerColor(player.id);
     const sprite = avatarSprite(player.avatarId);
-    if (avatarAtlas) drawMotionAtlasSprite(context, avatarAtlas, sprite.col, sprite.row, 2, 2, player.position, sprite.size, renderDirection, pulse);
-    else if (spriteSheet) drawAnimatedSprite(context, spriteSheet, SPRITES.player.row, frame, player.position, SPRITES.player.size, renderDirection, pulse);
-    else drawPlayerUnit(context, player.position, player.avatarId);
+    if (avatarAtlas) drawMotionAtlasSprite(context, avatarAtlas, sprite.col, sprite.row, 2, 2, drawPosition, sprite.size, renderDirection, pulse);
+    else if (spriteSheet) drawAnimatedSprite(context, spriteSheet, SPRITES.player.row, frame, drawPosition, SPRITES.player.size, renderDirection, pulse);
+    else drawPlayerUnit(context, drawPosition, player.avatarId);
     context.strokeStyle = accentColor;
     context.lineWidth = player.id === socket.id ? 3 : 2;
     context.beginPath();
-    context.arc(player.position.x, player.position.y, player.id === socket.id ? 21 : 19, 0, Math.PI * 2);
+    context.arc(drawPosition.x, drawPosition.y, player.id === socket.id ? 21 : 19, 0, Math.PI * 2);
     context.stroke();
     context.strokeStyle = '#ffffff';
     context.lineWidth = 2;
     context.beginPath();
-    context.moveTo(player.position.x, player.position.y);
-    context.lineTo(player.position.x + player.aim.x * 24, player.position.y + player.aim.y * 24);
+    context.moveTo(drawPosition.x, drawPosition.y);
+    context.lineTo(drawPosition.x + player.aim.x * 24, drawPosition.y + player.aim.y * 24);
     context.stroke();
-    drawEquipmentAuras(context, player);
-    drawPlayerNameplate(context, player.nickname, player.hp, player.position, accentColor, player.alive);
+    const visualPlayer = { ...player, position: drawPosition };
+    drawEquipmentAuras(context, visualPlayer);
+    drawPlayerNameplate(context, player.nickname, player.hp, drawPosition, accentColor, player.alive);
     context.globalAlpha = 1;
   }
   drawVisualEffects(context, effects);
@@ -1395,6 +1400,25 @@ function sampleMotion(id: string, position: Vec2, now: number): MotionSample {
     previous.lastMovedAt = now;
     previous.position = { ...position };
   }
+  return previous;
+}
+
+function smoothRenderPosition(id: string, target: Vec2, amount: number): Vec2 {
+  const previous = renderPositions.get(id);
+  if (!previous) {
+    const initial = { ...target };
+    renderPositions.set(id, initial);
+    return initial;
+  }
+  const dx = target.x - previous.x;
+  const dy = target.y - previous.y;
+  if (Math.hypot(dx, dy) > 240) {
+    previous.x = target.x;
+    previous.y = target.y;
+    return previous;
+  }
+  previous.x += dx * amount;
+  previous.y += dy * amount;
   return previous;
 }
 
