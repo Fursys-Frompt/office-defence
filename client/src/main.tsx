@@ -28,11 +28,13 @@ type AudioCue = FeedbackEvent['type'] | 'shoot' | 'melee';
 
 const socket: GameSocket = io();
 const SPRITES = {
-  player: { col: 0, row: 0, size: 70 },
-  normal: { col: 1, row: 0, size: 68 },
-  runner: { col: 0, row: 1, size: 72 },
-  tanker: { col: 1, row: 1, size: 92 }
+  player: { row: 0, size: 74, shadow: 30, frameMs: 130 },
+  normal: { row: 1, size: 74, shadow: 32, frameMs: 150 },
+  runner: { row: 2, size: 78, shadow: 30, frameMs: 95 },
+  tanker: { row: 3, size: 104, shadow: 46, frameMs: 210 }
 } as const;
+const WALK_FRAME_COUNT = 4;
+const MOVEMENT_HOLD_MS = 180;
 const RESOURCE_SPRITES: Record<ResourceType, { col: number; row: number; size: number }> = {
   chairParts: { col: 0, row: 0, size: 34 },
   deskParts: { col: 1, row: 0, size: 34 },
@@ -58,10 +60,10 @@ const DECOR_SPRITES = [
   { col: 3, row: 3, position: { x: 1490, y: 128 }, size: 84 }
 ] as const;
 const AVATARS = [
-  { id: 0, label: 'Teal Lead', col: 0, row: 0 },
-  { id: 1, label: 'Coral Planner', col: 1, row: 0 },
-  { id: 2, label: 'Gold Maker', col: 0, row: 1 },
-  { id: 3, label: 'Violet Guard', col: 1, row: 1 }
+  { id: 0, label: 'Urban Teal', col: 0, row: 0 },
+  { id: 1, label: 'Signal Coral', col: 1, row: 0 },
+  { id: 2, label: 'Utility Gold', col: 0, row: 1 },
+  { id: 3, label: 'Night Violet', col: 1, row: 1 }
 ] as const;
 const CANVAS_AVATAR_STYLES = [
   { hair: '#20282c', cloth: '#f4f7f1', accent: '#6fd7c8', cosmetic: 'pin' },
@@ -69,6 +71,14 @@ const CANVAS_AVATAR_STYLES = [
   { hair: '#6c4d3f', cloth: '#fff0dc', accent: '#9edfb5', cosmetic: 'clip' },
   { hair: '#29334a', cloth: '#ece7ff', accent: '#f2c84e', cosmetic: 'stripe' }
 ] as const;
+
+type MotionSample = {
+  position: Vec2;
+  direction: Vec2;
+  lastMovedAt: number;
+};
+
+const motionSamples = new Map<string, MotionSample>();
 
 function App() {
   const [nickname, setNickname] = useState('');
@@ -619,12 +629,10 @@ function drawGame(
     drawWall(context, wall);
   }
   for (const resource of snapshot.resources) {
-    drawShadow(context, resource.position, 22);
-    drawResourceNode(context, resource.type, resource.position);
+    drawWorldResource(context, propAtlas, resource.type, resource.position);
   }
   for (const facility of snapshot.facilities) {
-    drawShadow(context, facility.position, 42);
-    drawFacilityNode(context, facility.type, facility.position);
+    drawWorldFacility(context, propAtlas, facility.type, facility.position);
     context.fillStyle = 'rgba(255,255,255,0.35)';
     context.fillRect(facility.position.x - 24, facility.position.y - 25, Math.max(0, facility.hp / 160) * 48, 4);
   }
@@ -634,16 +642,31 @@ function drawGame(
   for (const zombie of snapshot.zombies) {
     const impact = getActiveImpact(zombie.position, effects);
     const shake = impact ? Math.sin((performance.now() - impact.startedAt) * 0.09) * (1 - impact.age) * 5 : 0;
+    const now = performance.now();
     const drawPosition = { x: zombie.position.x + shake, y: zombie.position.y };
-    drawShadow(context, drawPosition, zombie.type === 'tanker' ? 44 : 30);
-    drawEnemyUnit(context, zombie.type, drawPosition);
-    if (impact) drawImpactFlash(context, drawPosition, zombie.type === 'tanker' ? 52 : 38, impact.age, impact.type);
+    const sprite = SPRITES[zombie.type];
+    const motion = sampleMotion(`zombie:${zombie.id}`, zombie.position, now);
+    const frame = walkFrame(now, sprite.frameMs, motion.lastMovedAt);
+    const pulse = framePulse(frame);
+    drawShadow(context, drawPosition, sprite.shadow + pulse * 4);
+    if (spriteSheet) drawAnimatedSprite(context, spriteSheet, sprite.row, frame, drawPosition, sprite.size, motion.direction, pulse);
+    else drawEnemyUnit(context, zombie.type, drawPosition);
+    if (impact) drawImpactFlash(context, drawPosition, zombie.type === 'tanker' ? 58 : 42, impact.age, impact.type);
   }
   for (const player of snapshot.players) {
+    const now = performance.now();
+    const motion = sampleMotion(`player:${player.id}`, player.position, now);
+    const moving = now - motion.lastMovedAt < MOVEMENT_HOLD_MS;
+    const frame = moving ? walkFrame(now, SPRITES.player.frameMs, motion.lastMovedAt) : 0;
+    const pulse = moving ? framePulse(frame) : 0;
+    const renderDirection = moving ? motion.direction : player.aim;
     context.globalAlpha = player.alive ? 1 : 0.35;
-    drawShadow(context, player.position, 28);
+    drawShadow(context, player.position, 28 + pulse * 3);
     const accentColor = player.id === socket.id ? '#7bdff2' : playerColor(player.id);
-    drawPlayerUnit(context, player.position, player.avatarId);
+    const sprite = avatarSprite(player.avatarId);
+    if (avatarAtlas) drawMotionAtlasSprite(context, avatarAtlas, sprite.col, sprite.row, 2, 2, player.position, sprite.size, renderDirection, pulse);
+    else if (spriteSheet) drawAnimatedSprite(context, spriteSheet, SPRITES.player.row, frame, player.position, SPRITES.player.size, renderDirection, pulse);
+    else drawPlayerUnit(context, player.position, player.avatarId);
     context.strokeStyle = accentColor;
     context.lineWidth = player.id === socket.id ? 3 : 2;
     context.beginPath();
@@ -687,48 +710,115 @@ function drawVisualEffects(context: CanvasRenderingContext2D, effects: VisualEff
     context.save();
     context.globalAlpha = alpha;
     if (effect.type === 'meleeSwing') {
-      context.strokeStyle = 'rgba(255,255,255,0.92)';
-      context.lineWidth = 7;
-      context.beginPath();
-      context.arc(effect.position.x, effect.position.y, 34, -0.25 * Math.PI - age, 0.75 * Math.PI + age);
-      context.stroke();
-      context.strokeStyle = 'rgba(123,223,242,0.84)';
-      context.lineWidth = 3;
-      context.beginPath();
-      context.arc(effect.position.x, effect.position.y, 42, -0.15 * Math.PI - age, 0.65 * Math.PI + age);
-      context.stroke();
+      drawInkSlash(context, effect.position, 34 + age * 16, age, 'rgba(247,251,250,0.86)', 'rgba(42,55,58,0.45)');
       context.restore();
       continue;
     }
     if (effect.type === 'hit') {
-      context.strokeStyle = color;
-      context.lineWidth = 3;
-      context.beginPath();
-      context.arc(effect.position.x, effect.position.y, 10 + age * 22, 0, Math.PI * 2);
-      context.stroke();
+      drawHitBurst(context, effect.position, age, '#fff0a3');
     } else if (effect.type === 'kill') {
-      context.strokeStyle = 'rgba(255,111,97,0.82)';
-      context.lineWidth = 4;
-      context.beginPath();
-      context.arc(effect.position.x, effect.position.y, 20 + age * 42, 0, Math.PI * 2);
-      context.stroke();
-      context.fillStyle = 'rgba(255,244,163,0.55)';
-      for (let i = 0; i < 5; i += 1) {
-        const angle = age * Math.PI * 2 + i * 1.256;
-        context.beginPath();
-        context.arc(effect.position.x + Math.cos(angle) * 24, effect.position.y + Math.sin(angle) * 18, 3, 0, Math.PI * 2);
-        context.fill();
-      }
+      drawHitBurst(context, effect.position, age, '#ff806f', 1.45);
+      drawInkSlash(context, effect.position, 38 + age * 28, age, 'rgba(255,128,111,0.72)', 'rgba(42,55,58,0.36)');
+    } else if (effect.type === 'collect' || effect.type === 'build' || effect.type === 'heal') {
+      drawPickupMotes(context, effect.position, age, color);
+    } else if (effect.type === 'playerDown') {
+      drawDownDust(context, effect.position, age);
     }
-    context.font = effect.type === 'playerDown' ? 'bold 18px sans-serif' : 'bold 16px sans-serif';
+    context.font = effect.type === 'playerDown' ? '800 17px sans-serif' : '800 14px sans-serif';
     context.textAlign = 'center';
-    context.lineWidth = 4;
-    context.strokeStyle = 'rgba(42,55,58,0.72)';
+    context.lineWidth = 3;
+    context.strokeStyle = 'rgba(28,38,36,0.78)';
     context.strokeText(effect.text, effect.position.x, y);
     context.fillStyle = color;
     context.fillText(effect.text, effect.position.x, y);
     context.restore();
   }
+}
+
+function drawHitBurst(context: CanvasRenderingContext2D, position: Vec2, age: number, color: string, scale = 1) {
+  context.save();
+  context.strokeStyle = 'rgba(31,39,38,0.62)';
+  context.fillStyle = color;
+  context.lineCap = 'round';
+  for (let i = 0; i < 7; i += 1) {
+    const angle = i * 0.897 + age * 0.45;
+    const inner = (8 + age * 8) * scale;
+    const outer = (18 + age * 24 + (i % 2) * 5) * scale;
+    const x1 = position.x + Math.cos(angle) * inner;
+    const y1 = position.y + Math.sin(angle) * inner * 0.62;
+    const x2 = position.x + Math.cos(angle) * outer;
+    const y2 = position.y + Math.sin(angle) * outer * 0.62;
+    context.lineWidth = i % 2 === 0 ? 4 : 2;
+    context.beginPath();
+    context.moveTo(x1, y1);
+    context.lineTo(x2, y2);
+    context.stroke();
+    context.beginPath();
+    context.arc(x2, y2, (2.2 + (i % 3)) * (1 - age * 0.35), 0, Math.PI * 2);
+    context.fill();
+  }
+  context.restore();
+}
+
+function drawInkSlash(
+  context: CanvasRenderingContext2D,
+  position: Vec2,
+  radius: number,
+  age: number,
+  color: string,
+  outline: string
+) {
+  context.save();
+  context.lineCap = 'round';
+  context.strokeStyle = outline;
+  context.lineWidth = 9 * (1 - age * 0.45);
+  context.beginPath();
+  context.arc(position.x, position.y, radius, -0.78 - age * 0.2, 0.82 + age * 0.16);
+  context.stroke();
+  context.strokeStyle = color;
+  context.lineWidth = 5 * (1 - age * 0.45);
+  context.beginPath();
+  context.arc(position.x, position.y, radius, -0.7 - age * 0.2, 0.72 + age * 0.16);
+  context.stroke();
+  context.restore();
+}
+
+function drawPickupMotes(context: CanvasRenderingContext2D, position: Vec2, age: number, color: string) {
+  context.save();
+  context.fillStyle = color;
+  context.strokeStyle = 'rgba(28,38,36,0.4)';
+  context.lineWidth = 1.5;
+  for (let i = 0; i < 6; i += 1) {
+    const angle = i * 1.047 + 0.4;
+    const distance = 8 + age * (22 + i * 1.7);
+    const x = position.x + Math.cos(angle) * distance;
+    const y = position.y + Math.sin(angle) * distance * 0.58 - age * 18;
+    context.beginPath();
+    context.roundRect(x - 3, y - 3, 6, 6, 2);
+    context.fill();
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawDownDust(context: CanvasRenderingContext2D, position: Vec2, age: number) {
+  context.save();
+  context.fillStyle = 'rgba(52,61,58,0.24)';
+  for (let i = 0; i < 5; i += 1) {
+    const angle = i * 1.256;
+    context.beginPath();
+    context.ellipse(
+      position.x + Math.cos(angle) * age * 34,
+      position.y + 16 + Math.sin(angle) * age * 10,
+      12 * (1 - age * 0.35),
+      5 * (1 - age * 0.35),
+      angle,
+      0,
+      Math.PI * 2
+    );
+    context.fill();
+  }
+  context.restore();
 }
 
 function drawProjectile(context: CanvasRenderingContext2D, projectile: GameSnapshot['projectiles'][number]) {
@@ -758,6 +848,69 @@ function drawProjectile(context: CanvasRenderingContext2D, projectile: GameSnaps
   context.arc(projectile.position.x, projectile.position.y, 5, 0, Math.PI * 2);
   context.fill();
   context.restore();
+}
+
+function drawWorldResource(
+  context: CanvasRenderingContext2D,
+  propAtlas: HTMLImageElement | null,
+  type: ResourceType,
+  position: Vec2
+) {
+  const sprite = RESOURCE_SPRITES[type];
+  const now = performance.now();
+  const bob = Math.sin(now * 0.004 + position.x * 0.03 + position.y * 0.02) * 1.6;
+  const size = sprite.size * 1.34;
+
+  context.save();
+  drawGroundBlob(context, position, size * 0.86, 'rgba(28,38,36,0.16)');
+  context.globalAlpha = 0.85;
+  context.strokeStyle = 'rgba(255,244,163,0.28)';
+  context.lineWidth = 2;
+  context.setLineDash([5, 6]);
+  context.beginPath();
+  context.ellipse(position.x, position.y + 8, size * 0.48, size * 0.22, 0, 0, Math.PI * 2);
+  context.stroke();
+  context.setLineDash([]);
+  context.globalAlpha = 1;
+
+  if (propAtlas) {
+    drawAtlasSprite(context, propAtlas, sprite.col, sprite.row, 4, 4, { x: position.x, y: position.y + bob }, size);
+  } else {
+    drawResourceNode(context, type, { x: position.x, y: position.y + bob });
+  }
+  context.restore();
+}
+
+function drawWorldFacility(
+  context: CanvasRenderingContext2D,
+  propAtlas: HTMLImageElement | null,
+  type: FacilityType,
+  position: Vec2
+) {
+  const sprite = FACILITY_SPRITES[type];
+  const size = sprite.size * 1.72;
+
+  context.save();
+  drawGroundBlob(context, position, size * 1.04, 'rgba(20,31,30,0.22)');
+  context.strokeStyle = 'rgba(23,59,63,0.24)';
+  context.lineWidth = 2;
+  context.beginPath();
+  context.ellipse(position.x, position.y + 10, size * 0.55, size * 0.28, -0.08, 0, Math.PI * 2);
+  context.stroke();
+
+  if (propAtlas) {
+    drawAtlasSprite(context, propAtlas, sprite.col, sprite.row, 4, 4, position, size);
+  } else {
+    drawFacilityNode(context, type, position);
+  }
+  context.restore();
+}
+
+function drawGroundBlob(context: CanvasRenderingContext2D, position: Vec2, width: number, fill: string) {
+  context.fillStyle = fill;
+  context.beginPath();
+  context.ellipse(position.x + 2, position.y + 18, width * 0.46, width * 0.18, -0.08, 0, Math.PI * 2);
+  context.fill();
 }
 
 function drawEquipmentAuras(context: CanvasRenderingContext2D, player: GameSnapshot['players'][number]) {
@@ -1127,7 +1280,7 @@ function avatarSprite(avatarId: number) {
   return {
     col: safeId % 2,
     row: Math.floor(safeId / 2),
-    size: 60
+    size: SPRITES.player.size
   };
 }
 
@@ -1211,35 +1364,85 @@ function drawImpactFlash(
   type: VisualEffect['type']
 ) {
   context.save();
-  context.globalAlpha = (1 - age) * (type === 'kill' ? 0.5 : 0.34);
-  context.fillStyle = type === 'kill' ? '#ff6f61' : '#fff4a3';
-  context.beginPath();
-  context.arc(position.x, position.y - size * 0.08, size * 0.34, 0, Math.PI * 2);
-  context.fill();
+  context.globalAlpha = (1 - age) * (type === 'kill' ? 0.72 : 0.5);
+  context.strokeStyle = type === 'kill' ? 'rgba(255,128,111,0.78)' : 'rgba(255,240,163,0.72)';
+  context.lineWidth = type === 'kill' ? 5 : 3;
+  context.lineCap = 'round';
+  for (let i = 0; i < 5; i += 1) {
+    const angle = i * 1.256 + age * 0.35;
+    const inner = size * (0.08 + age * 0.06);
+    const outer = size * (0.28 + age * 0.16);
+    context.beginPath();
+    context.moveTo(position.x + Math.cos(angle) * inner, position.y + Math.sin(angle) * inner * 0.65);
+    context.lineTo(position.x + Math.cos(angle) * outer, position.y + Math.sin(angle) * outer * 0.65);
+    context.stroke();
+  }
   context.restore();
 }
 
-function drawSprite(
+function sampleMotion(id: string, position: Vec2, now: number): MotionSample {
+  const previous = motionSamples.get(id);
+  if (!previous) {
+    const sample = { position: { ...position }, direction: { x: 1, y: 0 }, lastMovedAt: now };
+    motionSamples.set(id, sample);
+    return sample;
+  }
+  const dx = position.x - previous.position.x;
+  const dy = position.y - previous.position.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance > 0.35) {
+    previous.direction = { x: dx / distance, y: dy / distance };
+    previous.lastMovedAt = now;
+    previous.position = { ...position };
+  }
+  return previous;
+}
+
+function walkFrame(now: number, frameMs: number, lastMovedAt: number) {
+  if (now - lastMovedAt > MOVEMENT_HOLD_MS) return 0;
+  return Math.floor(now / frameMs) % WALK_FRAME_COUNT;
+}
+
+function framePulse(frame: number) {
+  return frame === 1 || frame === 3 ? 1 : 0;
+}
+
+function spriteRotationFromDirection(direction: Vec2) {
+  const length = Math.hypot(direction.x, direction.y);
+  if (length < 0.05) return 0;
+  return Math.atan2(direction.y / length, direction.x / length) - Math.PI / 2;
+}
+
+function drawAnimatedSprite(
   context: CanvasRenderingContext2D,
   image: HTMLImageElement,
-  col: number,
   row: number,
+  frame: number,
   position: Vec2,
-  size: number
+  size: number,
+  direction: Vec2,
+  pulse: number
 ) {
-  const frameWidth = image.naturalWidth / 2;
-  const frameHeight = image.naturalHeight / 2;
+  const frameWidth = image.naturalWidth / WALK_FRAME_COUNT;
+  const frameHeight = image.naturalHeight / 4;
+  const lean = Math.max(-0.09, Math.min(0.09, direction.x * 0.045 + (pulse ? direction.x * 0.035 : 0)));
+  const lift = pulse ? -2 : 0;
+  const rotation = spriteRotationFromDirection(direction) + lean;
+  context.save();
+  context.translate(position.x, position.y + lift);
+  context.rotate(rotation);
   context.drawImage(
     image,
-    col * frameWidth,
+    frame * frameWidth,
     row * frameHeight,
     frameWidth,
     frameHeight,
-    position.x - size / 2,
-    position.y - size / 2,
+    -size / 2,
+    -size / 2,
     size,
     size
   );
+  context.restore();
 }
 
 function drawAtlasSprite(
@@ -1265,6 +1468,40 @@ function drawAtlasSprite(
     size,
     size
   );
+}
+
+function drawMotionAtlasSprite(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  col: number,
+  row: number,
+  columns: number,
+  rows: number,
+  position: Vec2,
+  size: number,
+  direction: Vec2,
+  pulse: number
+) {
+  const frameWidth = image.naturalWidth / columns;
+  const frameHeight = image.naturalHeight / rows;
+  const lean = Math.max(-0.08, Math.min(0.08, direction.x * 0.045 + (pulse ? direction.x * 0.025 : 0)));
+  const lift = pulse ? -2 : 0;
+  const rotation = spriteRotationFromDirection(direction) + lean;
+  context.save();
+  context.translate(position.x, position.y + lift);
+  context.rotate(rotation);
+  context.drawImage(
+    image,
+    col * frameWidth,
+    row * frameHeight,
+    frameWidth,
+    frameHeight,
+    -size / 2,
+    -size / 2,
+    size,
+    size
+  );
+  context.restore();
 }
 
 function drawShadow(context: CanvasRenderingContext2D, position: Vec2, width: number) {
@@ -1293,17 +1530,19 @@ function drawOfficeFloor(
   height: number,
   propAtlas: HTMLImageElement | null
 ) {
-  context.fillStyle = '#e8f0ee';
+  context.fillStyle = '#dfe7e3';
   context.fillRect(0, 0, width, height);
-  context.fillStyle = 'rgba(255,255,255,0.42)';
-  for (let x = 40; x < width; x += 160) {
-    for (let y = 40; y < height; y += 160) {
-      context.beginPath();
-      context.roundRect(x, y, 72, 72, 14);
-      context.fill();
+
+  context.fillStyle = 'rgba(255,255,255,0.16)';
+  for (let x = 24; x < width; x += 160) {
+    for (let y = 24; y < height; y += 160) {
+      const offset = ((x * 17 + y * 31) % 23) - 11;
+      context.fillRect(x + offset * 0.4, y - offset * 0.25, 68, 54);
     }
   }
-  context.strokeStyle = 'rgba(23,59,63,0.10)';
+
+  context.strokeStyle = 'rgba(32,50,48,0.12)';
+  context.lineWidth = 1;
   for (let x = 0; x < width; x += 80) {
     context.beginPath();
     context.moveTo(x, 0);
@@ -1316,7 +1555,32 @@ function drawOfficeFloor(
     context.lineTo(width, y);
     context.stroke();
   }
-  context.strokeStyle = 'rgba(45,178,170,0.16)';
+
+  context.strokeStyle = 'rgba(255,255,255,0.18)';
+  for (let x = 40; x < width; x += 80) {
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, height);
+    context.stroke();
+  }
+  for (let y = 40; y < height; y += 80) {
+    context.beginPath();
+    context.moveTo(0, y);
+    context.lineTo(width, y);
+    context.stroke();
+  }
+
+  for (let i = 0; i < 34; i += 1) {
+    const x = (i * 337) % width;
+    const y = (i * 191) % height;
+    const radius = 18 + (i % 5) * 7;
+    context.fillStyle = i % 3 === 0 ? 'rgba(44,58,55,0.045)' : 'rgba(255,255,255,0.11)';
+    context.beginPath();
+    context.ellipse(x, y, radius * 1.35, radius * 0.48, (i % 7) * 0.31, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  context.strokeStyle = 'rgba(34,59,57,0.22)';
   context.lineWidth = 4;
   context.strokeRect(32, 32, width - 64, height - 64);
   context.lineWidth = 1;
@@ -1325,17 +1589,6 @@ function drawOfficeFloor(
       drawAtlasSprite(context, propAtlas, decor.col, decor.row, 4, 4, decor.position, decor.size);
     }
   }
-  const zones = [
-    ['Open Office', 80, 80],
-    ['Meeting Room', 720, 90],
-    ['Lounge', 1120, 200],
-    ['Focus Zone', 420, 720],
-    ['Cafe', 900, 760],
-    ['Storage', 1280, 700]
-  ] as const;
-  context.fillStyle = 'rgba(23,59,63,0.35)';
-  context.font = '18px sans-serif';
-  zones.forEach(([label, x, y]) => context.fillText(label, x, y));
 }
 
 function Root() {
