@@ -64,10 +64,10 @@ const DECOR_SPRITES = [
   { col: 3, row: 3, position: { x: 1490, y: 128 }, size: 84 }
 ] as const;
 const AVATARS = [
-  { id: 0, label: 'Urban Teal', col: 0, row: 0 },
-  { id: 1, label: 'Signal Coral', col: 1, row: 0 },
-  { id: 2, label: 'Utility Gold', col: 0, row: 1 },
-  { id: 3, label: 'Night Violet', col: 1, row: 1 }
+  { id: 0, label: '어반 틸', col: 0, row: 0 },
+  { id: 1, label: '시그널 코랄', col: 1, row: 0 },
+  { id: 2, label: '유틸리티 골드', col: 0, row: 1 },
+  { id: 3, label: '나이트 바이올렛', col: 1, row: 1 }
 ] as const;
 const CANVAS_AVATAR_STYLES = [
   { hair: '#20282c', cloth: '#f4f7f1', accent: '#6fd7c8', cosmetic: 'pin' },
@@ -122,19 +122,19 @@ function App() {
       <main className="shell intro">
         <section className="join-panel">
           <div>
-            <p className="eyebrow">FURSYS Smart Office</p>
-            <h1>Zombie Office Survival</h1>
-            <p className="subtitle">Collect office parts, build a defensive line, and chain kills before the next wave overwhelms the room.</p>
+            <p className="eyebrow">퍼시스 스마트 오피스</p>
+            <h1>오피스 좀비 서바이벌</h1>
+            <p className="subtitle">사무실 곳곳의 부품을 모아 장비를 강화하고, 몰려오는 좀비를 막아 제한 시간 동안 가장 높은 생존 점수를 노리세요.</p>
           </div>
           <label>
-            Nickname
-            <input value={nickname} maxLength={16} onChange={(event) => setNickname(event.target.value)} placeholder="Survivor" />
+            닉네임
+            <input value={nickname} maxLength={16} onChange={(event) => setNickname(event.target.value)} placeholder="생존자" />
           </label>
           <label>
-            Room code
-            <input value={roomInput} maxLength={8} onChange={(event) => setRoomInput(event.target.value.toUpperCase())} placeholder="Leave blank to create" />
+            방 코드
+            <input value={roomInput} maxLength={8} onChange={(event) => setRoomInput(event.target.value.toUpperCase())} placeholder="새 방을 만들려면 비워두세요" />
           </label>
-          <div className="avatar-picker" aria-label="Avatar">
+          <div className="avatar-picker" aria-label="아바타 선택">
             {AVATARS.map((avatar) => (
               <button
                 key={avatar.id}
@@ -163,21 +163,21 @@ function App() {
             />
             <div>
               <strong>{AVATARS[avatarId].label}</strong>
-              <span>Selected survivor avatar</span>
+              <span>외형만 바뀌며 능력 차이는 없습니다.</span>
             </div>
           </div>
           <button
             className="primary cta"
             onClick={() =>
               socket.emit('joinRoom', {
-                nickname: nickname || 'Survivor',
+                nickname: nickname || '생존자',
                 roomId: roomInput || undefined,
                 avatarId,
                 settings
               })
             }
           >
-            Enter room
+            방 입장하기
           </button>
           {error && <p className="error">{error}</p>}
         </section>
@@ -191,28 +191,28 @@ function App() {
         <section className="panel">
           <div className="room-header">
             <div>
-              <p className="eyebrow">Mission Room</p>
+              <p className="eyebrow">미션 대기실</p>
               <h1>{roomId}</h1>
               <div className="room-meta">
-                <span>{snapshot.players.length}/{snapshot.settings.maxPlayers} Players</span>
-                <span>{readyCount}/{snapshot.players.length} Ready</span>
-                <span>{Math.round(snapshot.settings.gameDurationSec / 60)} min</span>
+                <span>참가자 {snapshot.players.length}/{snapshot.settings.maxPlayers}</span>
+                <span>준비 {readyCount}/{snapshot.players.length}</span>
+                <span>{Math.round(snapshot.settings.gameDurationSec / 60)}분</span>
               </div>
             </div>
-            <button onClick={() => socket.emit('leaveRoom')}>Leave</button>
+            <button onClick={() => socket.emit('leaveRoom')}>나가기</button>
           </div>
           <div className="player-list">
             {snapshot.players.map((player) => (
               <div key={player.id} className="player-row">
-                <span>{player.nickname}{player.host ? ' / Host' : ''}</span>
-                <strong className={player.ready ? 'status ready' : 'status wait'}>{player.ready ? 'READY' : 'WAIT'}</strong>
+                <span>{player.nickname}{player.host ? ' / 방장' : ''}</span>
+                <strong className={player.ready ? 'status ready' : 'status wait'}>{player.ready ? '준비 완료' : '대기 중'}</strong>
               </div>
             ))}
           </div>
           {me.host && (
             <div className="settings">
               <label>
-                Max players
+                최대 인원
                 <input
                   type="number"
                   min={2}
@@ -222,7 +222,7 @@ function App() {
                 />
               </label>
               <label>
-                Duration (sec)
+                플레이 시간(초)
                 <input
                   type="number"
                   min={60}
@@ -238,13 +238,13 @@ function App() {
                   checked={settings.pvpEnabled}
                   onChange={(event) => setSettings({ ...settings, pvpEnabled: event.target.checked })}
                 />
-                PVP
+                PVP 허용
               </label>
-              <button onClick={() => socket.emit('updateSettings', settings)}>Apply settings</button>
+              <button onClick={() => socket.emit('updateSettings', settings)}>설정 적용</button>
             </div>
           )}
           <button className="primary" onClick={() => socket.emit('setReady', !me.ready)}>
-            {me.ready ? 'Cancel ready' : 'Ready'}
+            {me.ready ? '준비 취소' : '준비 완료'}
           </button>
         </section>
       </main>
@@ -256,20 +256,20 @@ function App() {
     return (
       <main className="shell result">
         <section className="panel">
-          <p className="eyebrow">Result</p>
-          <h1>Result</h1>
+          <p className="eyebrow">게임 결과</p>
+          <h1>생존 순위</h1>
           <div className="ranking">
             {ranking.map((player, index) => (
               <div key={player.id} className="rank-row">
                 <strong className="rank-place">{index + 1}</strong>
                 <span>{player.nickname}</span>
-                <span>{player.score} pt</span>
-                <span>{player.kills} kills</span>
-                <span>{player.survivalSec}s</span>
+                <span>{player.score}점</span>
+                <span>{player.kills}처치</span>
+                <span>{player.survivalSec}초 생존</span>
               </div>
             ))}
           </div>
-          <button onClick={() => window.location.reload()}>Back to lobby</button>
+          <button onClick={() => window.location.reload()}>처음으로 돌아가기</button>
         </section>
       </main>
     );
@@ -411,12 +411,12 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       <section className={`hud player-hud top-left ${hpPercent <= 30 ? 'danger' : ''}`}>
         <div className="player-summary">
           <strong>{me?.nickname}</strong>
-          <span>{me?.score ?? 0} pt</span>
+          <span>{me?.score ?? 0}점</span>
         </div>
-        <div className="hp-meter" aria-label={`HP ${hp} of ${maxHp}`}>
+        <div className="hp-meter" aria-label={`체력 ${hp}/${maxHp}`}>
           <span style={{ width: `${hpPercent}%` }} />
         </div>
-        <b>HP {hp}/{maxHp}</b>
+        <b>체력 {hp}/{maxHp}</b>
       </section>
       <section className="hud inventory-hud">
         {resourceKeys.map((resource) => (
@@ -433,15 +433,15 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         ))}
       </section>
       <section className="hud mission-hud top-right">
-        <span><b>{snapshot.remainingSec}</b>s</span>
-        <span>Wave <b>{snapshot.wave}</b></span>
-        <span className={`threat ${threat.tone}`}>Threat {threat.label}</span>
-        <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
+        <span><b>{snapshot.remainingSec}</b>초</span>
+        <span>웨이브 <b>{snapshot.wave}</b></span>
+        <span className={`threat ${threat.tone}`}>위협 {threat.label}</span>
+        <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP 켜짐' : 'PVP 꺼짐'}</span>
       </section>
       {combo >= 2 && (
         <section className="hud combo-hud">
           <strong>x{combo}</strong>
-          <span>CHAIN</span>
+          <span>연속 처치</span>
         </section>
       )}
       <section className="hud ranking-mini">
@@ -452,8 +452,8 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       {snapshot.phase === 'countdown' && <div className="countdown">{snapshot.countdown}</div>}
       <section className="equipment-bar">
         <div className="build-state">
-          <strong>Auto Gear</strong>
-          <span>Collect parts to upgrade</span>
+          <strong>자동 장비</strong>
+          <span>부품을 모으면 자동 강화</span>
         </div>
         {resourceKeys.map((resource) => (
           <div key={resource} className={`equipment-chip ${(me?.inventory[resource] ?? 0) > 0 ? 'active' : ''}`}>
@@ -479,10 +479,10 @@ function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
 }
 
 function getThreatLabel(wave: number) {
-  if (wave >= 8) return { label: 'EXTREME', tone: 'extreme' };
-  if (wave >= 5) return { label: 'HIGH', tone: 'high' };
-  if (wave >= 3) return { label: 'MID', tone: 'mid' };
-  return { label: 'LOW', tone: 'low' };
+  if (wave >= 8) return { label: '매우 높음', tone: 'extreme' };
+  if (wave >= 5) return { label: '높음', tone: 'high' };
+  if (wave >= 3) return { label: '보통', tone: 'mid' };
+  return { label: '낮음', tone: 'low' };
 }
 
 function spriteBackgroundPosition(col: number, row: number, columns: number, rows: number) {
@@ -1328,7 +1328,7 @@ function drawPlayerNameplate(
   context.textAlign = 'center';
   context.textBaseline = 'middle';
   context.fillStyle = alive ? '#17211d' : '#4f5960';
-  context.fillText(alive ? label : `${label} DOWN`, x, top + 10);
+  context.fillText(alive ? label : `${label} 쓰러짐`, x, top + 10);
 
   context.fillStyle = 'rgba(23,59,63,0.16)';
   context.beginPath();

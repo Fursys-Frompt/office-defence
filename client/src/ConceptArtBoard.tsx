@@ -3,29 +3,29 @@ import './concept-art.css';
 
 const avatarSkins = [
   {
-    name: 'Clean',
-    mood: 'minimal, tidy, quiet',
+    name: '클린',
+    mood: '단정하고 차분한 기본 생존자 스타일',
     colors: ['#20282c', '#f4f7f1', '#6fd7c8'],
     head: 'bob',
     cosmetic: 'pin'
   },
   {
-    name: 'Neon',
-    mood: 'arcade, sharp, high contrast',
+    name: '네온',
+    mood: '선명한 포인트 컬러가 있는 활동적인 스타일',
     colors: ['#1b2232', '#ff6873', '#63d8ff'],
     head: 'headset',
     cosmetic: 'band'
   },
   {
-    name: 'Soft',
-    mood: 'warm, casual, approachable',
+    name: '소프트',
+    mood: '따뜻하고 편안한 캐주얼 스타일',
     colors: ['#6c4d3f', '#ffd38a', '#9edfb5'],
     head: 'bun',
     cosmetic: 'clip'
   },
   {
-    name: 'Pop',
-    mood: 'bold, playful, collectible',
+    name: '팝',
+    mood: '밝고 수집 욕구를 주는 개성 있는 스타일',
     colors: ['#29334a', '#9a7fd2', '#f2c84e'],
     head: 'cap',
     cosmetic: 'stripe'
@@ -33,17 +33,17 @@ const avatarSkins = [
 ];
 
 const zombieTypes = [
-  { name: 'Walker', note: 'compact crawler, baseline pressure', body: 'walker' },
-  { name: 'Skitter', note: 'thin hunter, fast flank read', body: 'skitter' },
-  { name: 'Brute', note: 'front-heavy rammer, slow threat', body: 'brute' }
+  { name: '일반형', note: '가장 기본적인 압박을 주는 표준 좀비', body: 'walker' },
+  { name: '질주형', note: '얇은 실루엣으로 빠른 접근이 읽히는 좀비', body: 'skitter' },
+  { name: '중장형', note: '묵직한 덩치로 느리지만 강한 위협을 주는 좀비', body: 'brute' }
 ];
 
 const itemGroups = [
-  { name: 'Chair Parts', color: '#35c7bd', shape: 'chair' },
-  { name: 'Desk Parts', color: '#e6be60', shape: 'crate' },
-  { name: 'Panels', color: '#a7debd', shape: 'panel' },
-  { name: 'Power Core', color: '#80dff0', shape: 'bolt' },
-  { name: 'Med Kit', color: '#f56e68', shape: 'cross' }
+  { name: '의자 부품', color: '#35c7bd', shape: 'chair' },
+  { name: '책상 부품', color: '#e6be60', shape: 'crate' },
+  { name: '파티션 소재', color: '#a7debd', shape: 'panel' },
+  { name: '전력 코어', color: '#80dff0', shape: 'bolt' },
+  { name: '구급 키트', color: '#f56e68', shape: 'cross' }
 ];
 
 export function ConceptArtBoard() {
@@ -51,25 +51,24 @@ export function ConceptArtBoard() {
     <main className="concept-board">
       <header className="concept-hero">
         <div>
-          <p className="concept-kicker">Concept Art Board</p>
-          <h1>Personal Survival Skins</h1>
+          <p className="concept-kicker">콘셉트 보드</p>
+          <h1>개인 생존 스킨</h1>
           <p>
-            Avatar variation is treated as taste and identity only. No jobs, roles, team bonuses, or implied
-            combat classes.
+            아바타 차이는 취향과 개성만 표현합니다. 직업, 역할, 팀 보너스, 전투 클래스처럼 보이는 설명은 사용하지 않습니다.
           </p>
         </div>
-        <div className="concept-principles" aria-label="Design principles">
-          <span>solo score focus</span>
-          <span>office survival</span>
-          <span>skin collection</span>
-          <span>head-first top view</span>
+        <div className="concept-principles" aria-label="디자인 원칙">
+          <span>개인 점수 중심</span>
+          <span>오피스 생존</span>
+          <span>스킨 수집</span>
+          <span>상단 시점</span>
         </div>
       </header>
 
       <section className="concept-section">
         <div className="section-heading">
-          <p className="concept-kicker">Avatars</p>
-          <h2>Top-Down Head-First Skins</h2>
+          <p className="concept-kicker">아바타</p>
+          <h2>위에서 내려다보는 스킨</h2>
         </div>
         <div className="skin-grid">
           {avatarSkins.map((skin, index) => (
@@ -91,7 +90,7 @@ export function ConceptArtBoard() {
 
       <section className="concept-section">
         <div className="section-heading">
-          <p className="concept-kicker">Scale Check</p>
+          <p className="concept-kicker">크기 확인</p>
           <h2>96px, 64px, 40px, 28px</h2>
         </div>
         <div className="scale-stage">
@@ -99,9 +98,9 @@ export function ConceptArtBoard() {
             <AvatarConcept skin={avatarSkins[1]} index={1} />
           </div>
           <div className="scale-row">
-            <ScalePreview size="large" label="Lobby 96" />
-            <ScalePreview size="thumb" label="Thumb 64" />
-            <ScalePreview size="game" label="Game 40" />
+            <ScalePreview size="large" label="로비 96" />
+            <ScalePreview size="thumb" label="썸네일 64" />
+            <ScalePreview size="game" label="게임 40" />
             <ScalePreview size="hud" label="HUD 28" />
           </div>
         </div>
@@ -110,8 +109,8 @@ export function ConceptArtBoard() {
       <section className="concept-section concept-split">
         <div>
           <div className="section-heading">
-            <p className="concept-kicker">Enemies</p>
-            <h2>Top-Down Enemy Silhouettes</h2>
+            <p className="concept-kicker">적</p>
+            <h2>상단 시점 적 실루엣</h2>
           </div>
           <div className="zombie-row">
             {zombieTypes.map((zombie) => (
@@ -125,8 +124,8 @@ export function ConceptArtBoard() {
         </div>
         <div>
           <div className="section-heading">
-            <p className="concept-kicker">Items</p>
-            <h2>Collectible Office Resources</h2>
+            <p className="concept-kicker">아이템</p>
+            <h2>수집 가능한 오피스 자원</h2>
           </div>
           <div className="item-grid">
             {itemGroups.map((item) => (
@@ -155,7 +154,7 @@ function AvatarConcept({
     <div
       className={`avatar-concept avatar-${skin.head} cosmetic-${skin.cosmetic}`}
       style={{ '--hair': hair, '--cloth': cloth, '--accent': accent } as React.CSSProperties}
-      aria-label={`${skin.name} top-down avatar concept ${index + 1}`}
+      aria-label={`${skin.name} 상단 시점 아바타 콘셉트 ${index + 1}`}
     >
       <span className="top-shadow" />
       <span className="top-body">

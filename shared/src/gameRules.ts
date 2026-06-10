@@ -5,34 +5,34 @@ export const resourceKeys: ResourceType[] = ['chairParts', 'deskParts', 'partiti
 export const facilityKeys: FacilityType[] = ['partitionBarricade', 'deskBarricade', 'medStation', 'powerAmplifier'];
 
 export const RESOURCE_LABELS: Record<ResourceType, string> = {
-  chairParts: 'Chair',
-  deskParts: 'Desk',
-  partitionMaterial: 'Panel',
-  powerModule: 'Power',
-  medKit: 'Med'
+  chairParts: '의자',
+  deskParts: '책상',
+  partitionMaterial: '파티션',
+  powerModule: '전력',
+  medKit: '구급'
 };
 
 export const EQUIPMENT_LABELS: Record<ResourceType, string> = {
-  chairParts: 'Chair Shield',
-  deskParts: 'Desk Barrage',
-  partitionMaterial: 'Panel Guard',
-  powerModule: 'Power Core',
-  medKit: 'Med Reserve'
+  chairParts: '의자 방어막',
+  deskParts: '책상 포화',
+  partitionMaterial: '파티션 방호',
+  powerModule: '전력 코어',
+  medKit: '구급 비축'
 };
 
 export const EQUIPMENT_DESCRIPTIONS: Record<ResourceType, string> = {
-  chairParts: 'Orbit damage',
-  deskParts: 'Auto shots',
-  partitionMaterial: 'Damage guard',
-  powerModule: 'Attack boost',
-  medKit: 'HP reserve'
+  chairParts: '주변 피해',
+  deskParts: '자동 사격',
+  partitionMaterial: '피해 감소',
+  powerModule: '공격 강화',
+  medKit: '체력 보조'
 };
 
 export const FACILITY_LABELS: Record<FacilityType, string> = {
-  partitionBarricade: 'Panel',
-  deskBarricade: 'Desk',
-  medStation: 'Med Box',
-  powerAmplifier: 'Amp'
+  partitionBarricade: '파티션',
+  deskBarricade: '책상',
+  medStation: '구급함',
+  powerAmplifier: '증폭기'
 };
 
 export const FACILITY_COSTS: Record<FacilityType, Partial<ResourceInventory>> = {

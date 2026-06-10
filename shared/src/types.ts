@@ -31,10 +31,12 @@ export type Player = {
   host: boolean;
   alive: boolean;
   hp: number;
+  maxHp: number;
   position: Vec2;
   aim: Vec2;
   score: number;
   kills: number;
+  combo: number;
   inventory: ResourceInventory;
   resourcesCollected: number;
   facilitiesBuilt: number;
