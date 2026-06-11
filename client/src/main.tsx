@@ -105,6 +105,7 @@ function LobbyApp() {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [pendingAction, setPendingAction] = useState<PendingRoomAction | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  const settingsRoomRef = useRef('');
   const [settings, setSettings] = useState<RoomSettings>({
     maxPlayers: 6,
     gameDurationSec: 180,
@@ -137,8 +138,11 @@ function LobbyApp() {
   }, []);
 
   useEffect(() => {
-    if (snapshot?.phase === 'lobby') setSettings(snapshot.settings);
-  }, [snapshot?.phase, snapshot?.settings]);
+    if (snapshot?.phase !== 'lobby') return;
+    if (settingsRoomRef.current === snapshot.roomId) return;
+    settingsRoomRef.current = snapshot.roomId;
+    setSettings(snapshot.settings);
+  }, [snapshot?.phase, snapshot?.roomId, snapshot?.settings]);
 
   const me = snapshot?.players.find((player) => player.id === playerId);
   const readyCount = snapshot?.players.filter((player) => player.ready).length ?? 0;
@@ -159,6 +163,7 @@ function LobbyApp() {
 
   const leaveRoom = () => {
     socket.emit('leaveRoom');
+    settingsRoomRef.current = '';
     setRoomId('');
     setPlayerId('');
     setSnapshot(null);
