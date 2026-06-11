@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { io, Socket } from 'socket.io-client';
 import type {
@@ -36,7 +36,7 @@ const SPRITES = {
 } as const;
 const WALK_FRAME_COUNT = 4;
 const MOVEMENT_HOLD_MS = 180;
-const INPUT_SEND_MS = 33;
+const INPUT_SEND_MS = 16;
 const CAMERA_FOLLOW_AMOUNT = 0.62;
 const LOCAL_PLAYER_FOLLOW_AMOUNT = 0.84;
 const REMOTE_ENTITY_FOLLOW_AMOUNT = 0.36;
@@ -88,6 +88,8 @@ type MotionSample = {
 
 const motionSamples = new Map<string, MotionSample>();
 const renderPositions = new Map<string, Vec2>();
+const passiveItemKeys: ResourceType[] = ['chairParts', 'deskParts', 'partitionMaterial'];
+const usableItemKeys: ResourceType[] = ['medKit', 'powerModule'];
 
 type PendingRoomAction = {
   mode: 'create' | 'join';
@@ -316,7 +318,7 @@ function LobbyApp() {
   }
 
   if (snapshot.phase === 'ended') {
-    const ranking = [...snapshot.players].sort((a, b) => b.score - a.score);
+    const ranking = [...(snapshot.results.length > 0 ? snapshot.results : snapshot.players)].sort((a, b) => b.score - a.score);
     return (
       <main className="shell result">
         <section className="panel">
@@ -451,11 +453,31 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const queuedItem = useRef<ResourceType | undefined>(undefined);
   const seenFeedback = useRef(new Set<string>());
   const visualEffects = useRef<VisualEffect[]>([]);
+  const latestInputState = useRef<{ snapshot: GameSnapshot; me?: GameSnapshot['players'][number] }>({ snapshot });
   const audio = useRef(createAudioEngine());
   const spriteSheet = useGameImage(spriteSheetUrl);
   const propAtlas = useGameImage(propAtlasUrl);
   const avatarAtlas = useGameImage(avatarAtlasUrl);
   const me = snapshot.players.find((player) => player.id === playerId);
+  latestInputState.current = { snapshot, me };
+
+  const sendInput = useCallback(() => {
+    const current = latestInputState.current;
+    const currentMe = current.me;
+    const move = keyboardMove(pressed.current, joystick.current?.value);
+    const autoAim = currentMe ? getAutoAim(current.snapshot, currentMe) : undefined;
+    const aim = autoAim ? autoAim.direction : pointer.current;
+    const useItem = queuedItem.current;
+    queuedItem.current = undefined;
+    const input: PlayerInput = {
+      move,
+      aim,
+      shooting: Boolean(autoAim && currentMe && autoAim.distance <= playerAttackRange(current.snapshot, currentMe)),
+      melee: false,
+      useItem
+    };
+    socket.emit('input', input);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -463,34 +485,26 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       pressed.current.add(event.code);
       if (event.code === 'KeyQ') queuedItem.current = 'medKit';
       if (event.code === 'KeyE') queuedItem.current = 'powerModule';
+      sendInput();
     };
-    const onKeyUp = (event: KeyboardEvent) => pressed.current.delete(event.code);
+    const onKeyUp = (event: KeyboardEvent) => {
+      pressed.current.delete(event.code);
+      sendInput();
+    };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, []);
+  }, [sendInput]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      const move = keyboardMove(pressed.current, joystick.current?.value);
-      const autoAim = me ? getAutoAim(snapshot, me) : undefined;
-      const aim = autoAim ? autoAim.direction : pointer.current;
-      const useItem = queuedItem.current;
-      queuedItem.current = undefined;
-      const input: PlayerInput = {
-        move,
-        aim,
-        shooting: Boolean(autoAim && me && autoAim.distance <= playerAttackRange(snapshot, me)),
-        melee: false,
-        useItem
-      };
-      socket.emit('input', input);
+      sendInput();
     }, INPUT_SEND_MS);
     return () => window.clearInterval(id);
-  }, [snapshot, me]);
+  }, [sendInput]);
 
   useEffect(() => {
     if (me) latestRender.current = { snapshot, me };
@@ -574,9 +588,18 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         onMouseDown={() => {
           audio.current.unlock();
         }}
-        onTouchStart={(event) => handleTouch(event, joystick)}
-        onTouchMove={(event) => handleTouch(event, joystick)}
-        onTouchEnd={(event) => handleTouch(event, joystick)}
+        onTouchStart={(event) => {
+          handleTouch(event, joystick);
+          sendInput();
+        }}
+        onTouchMove={(event) => {
+          handleTouch(event, joystick);
+          sendInput();
+        }}
+        onTouchEnd={(event) => {
+          handleTouch(event, joystick);
+          sendInput();
+        }}
       />
       <div className={hpPercent <= 30 ? 'damage-vignette visible' : 'damage-vignette'} />
       <section className={`hud player-hud top-left ${hpPercent <= 30 ? 'danger' : ''}`}>
@@ -590,14 +613,10 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         <b>체력 {hp}/{maxHp}</b>
       </section>
       <section className="hud inventory-hud">
-        {resourceKeys.map((resource) => (
-          <button
+        {passiveItemKeys.map((resource) => (
+          <span
             key={resource}
-            type="button"
-            className={`inventory-chip ${(me?.inventory[resource] ?? 0) > 0 ? 'has' : 'empty'} ${resource === 'medKit' || resource === 'powerModule' ? 'usable' : ''}`}
-            onClick={() => {
-              if (resource === 'medKit' || resource === 'powerModule') queuedItem.current = resource;
-            }}
+            className={`inventory-chip passive ${(me?.inventory[resource] ?? 0) > 0 ? 'has' : 'empty'}`}
           >
             <i
               style={{
@@ -607,8 +626,35 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
             />
             <b>{me?.inventory[resource] ?? 0}</b>
             <em>{RESOURCE_LABELS[resource]}</em>
-          </button>
+          </span>
         ))}
+      </section>
+      <section className="hud usable-item-hud">
+        {usableItemKeys.map((resource) => {
+          const count = me?.inventory[resource] ?? 0;
+          return (
+            <button
+              key={resource}
+              type="button"
+              className={`usable-item-button ${count > 0 ? 'ready' : 'empty'}`}
+              disabled={count <= 0}
+              onClick={() => {
+                queuedItem.current = resource;
+                sendInput();
+              }}
+            >
+              <i
+                style={{
+                  backgroundImage: `url(${propAtlasUrl})`,
+                  backgroundPosition: spriteBackgroundPosition(RESOURCE_SPRITES[resource].col, RESOURCE_SPRITES[resource].row, 4, 4)
+                }}
+              />
+              <span>{resource === 'medKit' ? 'Q' : 'E'}</span>
+              <strong>{RESOURCE_LABELS[resource]}</strong>
+              <b>{count}</b>
+            </button>
+          );
+        })}
       </section>
       <section className="hud mission-hud top-right">
         <span><b>{snapshot.remainingSec}</b>초</span>
@@ -619,7 +665,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       {combo >= 2 && (
         <section className="hud combo-hud">
           <strong>x{combo}</strong>
-          <span>?곗냽 泥섏튂</span>
+          <span>연속 처치</span>
         </section>
       )}
       <section className="hud ranking-mini">
@@ -630,10 +676,10 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       {snapshot.phase === 'countdown' && <div className="countdown">{snapshot.countdown}</div>}
       <section className="equipment-bar">
         <div className="build-state">
-          <strong>?먮룞 ?λ퉬</strong>
-          <span>遺?덉쓣 紐⑥쑝硫??먮룞 媛뺥솕</span>
+          <strong>패시브 장비</strong>
+          <span>부품 보유 시 자동 적용</span>
         </div>
-        {resourceKeys.map((resource) => (
+        {passiveItemKeys.map((resource) => (
           <div key={resource} className={`equipment-chip ${(me?.inventory[resource] ?? 0) > 0 ? 'active' : ''}`}>
             <strong>Lv {me?.inventory[resource] ?? 0}</strong>
             <span>{EQUIPMENT_LABELS[resource]}</span>
@@ -649,7 +695,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
 }
 
 function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
-  if (joystickMove && Math.hypot(joystickMove.x, joystickMove.y) > 0.05) return joystickMove;
+  if (joystickMove && Math.hypot(joystickMove.x, joystickMove.y) > 0.025) return joystickMove;
   return {
     x: (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0),
     y: (keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0)
@@ -657,10 +703,10 @@ function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
 }
 
 function getThreatLabel(wave: number) {
-  if (wave >= 8) return { label: '留ㅼ슦 ?믪쓬', tone: 'extreme' };
-  if (wave >= 5) return { label: '?믪쓬', tone: 'high' };
-  if (wave >= 3) return { label: '蹂댄넻', tone: 'mid' };
-  return { label: '??쓬', tone: 'low' };
+  if (wave >= 8) return { label: '매우 높음', tone: 'extreme' };
+  if (wave >= 5) return { label: '높음', tone: 'high' };
+  if (wave >= 3) return { label: '보통', tone: 'mid' };
+  return { label: '낮음', tone: 'low' };
 }
 
 function spriteBackgroundPosition(col: number, row: number, columns: number, rows: number) {
@@ -1865,3 +1911,4 @@ const rootElement = document.getElementById('root')!;
 const rootStore = window as typeof window & { __zombieOfficeRoot?: ReturnType<typeof createRoot> };
 rootStore.__zombieOfficeRoot ??= createRoot(rootElement);
 rootStore.__zombieOfficeRoot.render(<Root />);
+

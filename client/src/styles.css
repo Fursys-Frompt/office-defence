@@ -597,14 +597,6 @@ canvas {
   box-shadow: inset 0 0 0 1px rgba(23, 59, 63, 0.08);
 }
 
-.inventory-chip.usable {
-  cursor: pointer;
-}
-
-.inventory-chip.usable.has:hover {
-  background: rgba(123, 223, 242, 0.24);
-}
-
 .inventory-chip.has {
   background: rgba(126, 220, 155, 0.22);
   box-shadow: inset 0 0 0 1px rgba(62, 125, 99, 0.24), 0 4px 14px rgba(23, 59, 63, 0.08);
@@ -632,6 +624,76 @@ canvas {
   font-size: 10px;
   line-height: 1;
   color: rgba(23, 33, 29, 0.66);
+}
+
+.usable-item-hud {
+  right: 12px;
+  bottom: 96px;
+  gap: 10px;
+}
+
+.usable-item-button {
+  position: relative;
+  width: 86px;
+  min-height: 74px;
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  grid-template-rows: auto auto;
+  gap: 2px 6px;
+  align-items: center;
+  border-radius: 8px;
+  padding: 8px;
+  background: #173b3f;
+  color: #f7fbfa;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 163, 0.48), 0 10px 26px rgba(23, 59, 63, 0.22);
+}
+
+.usable-item-button.ready {
+  cursor: pointer;
+}
+
+.usable-item-button.ready:hover {
+  background: #205057;
+}
+
+.usable-item-button.empty {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.usable-item-button i {
+  grid-row: 1 / 3;
+  width: 28px;
+  height: 28px;
+  background-repeat: no-repeat;
+  background-size: 400% 400%;
+}
+
+.usable-item-button span {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  min-width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #fff4a3;
+  color: #173b3f;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.usable-item-button strong {
+  font-size: 12px;
+  text-align: left;
+}
+
+.usable-item-button b {
+  color: #fff4a3;
+  font-size: 18px;
+  line-height: 1;
+  text-align: left;
 }
 
 .ranking-mini {
@@ -826,10 +888,21 @@ canvas {
   .inventory-hud {
     top: auto;
     left: 8px;
-    right: 8px;
-    bottom: 112px;
+    right: auto;
+    bottom: 118px;
     max-width: none;
-    justify-content: center;
+    justify-content: flex-start;
+  }
+
+  .usable-item-hud {
+    right: 12px;
+    bottom: 116px;
+    flex-direction: column;
+  }
+
+  .usable-item-button {
+    width: 78px;
+    min-height: 70px;
   }
 
   .combo-hud {
@@ -876,7 +949,7 @@ canvas {
 
   .touch-affordance {
     position: absolute;
-    inset: auto auto 164px 18px;
+    inset: auto auto 180px 18px;
     display: flex;
     pointer-events: none;
   }

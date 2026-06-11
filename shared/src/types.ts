@@ -102,6 +102,7 @@ export type GameSnapshot = {
   phase: GamePhase;
   settings: RoomSettings;
   players: Player[];
+  results: Player[];
   zombies: Zombie[];
   resources: ResourceNode[];
   facilities: Facility[];

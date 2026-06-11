@@ -30,6 +30,7 @@ type Room = {
   phase: GamePhase;
   settings: RoomSettings;
   players: Map<string, Player>;
+  results: Player[];
   inputs: Map<string, PlayerInput>;
   zombies: Zombie[];
   resources: ResourceNode[];
@@ -109,6 +110,7 @@ function createRoom(id: string, settings?: Partial<RoomSettings>): Room {
     phase: 'lobby',
     settings: sanitizeSettings({ ...DEFAULT_SETTINGS, ...settings }),
     players: new Map(),
+    results: [],
     inputs: new Map(),
     zombies: [],
     resources: [],
@@ -197,6 +199,7 @@ function snapshot(room: Room): GameSnapshot {
     phase: room.phase,
     settings: room.settings,
     players: [...room.players.values()],
+    results: room.results,
     zombies: room.zombies,
     resources: room.resources,
     facilities: room.facilities,
@@ -258,6 +261,7 @@ function startGame(room: Room) {
   room.projectiles = [];
   room.facilities = [];
   room.powerZones = [];
+  room.results = [];
   room.feedbackEvents = [];
   room.walls = walls.map((wall) => ({ ...wall }));
   room.wallHp = new Map();
@@ -287,6 +291,9 @@ function endGame(room: Room) {
   room.phase = 'ended';
   const alive = [...room.players.values()].filter((player) => player.alive);
   if (alive.length === 1) alive[0].score += 50;
+  room.results = [...room.players.values()]
+    .map((player) => ({ ...player, inventory: { ...player.inventory }, position: { ...player.position }, aim: { ...player.aim } }))
+    .sort((a, b) => b.score - a.score);
 }
 
 function tickRoom(room: Room) {
@@ -515,7 +522,7 @@ function updateChairShield(room: Room, player: Player, elapsed: number) {
       x: player.position.x + Math.cos(elapsed * 4.2) * Math.min(radius, 92),
       y: player.position.y + Math.sin(elapsed * 4.2) * Math.min(radius, 92)
     };
-    pushFeedback(room, 'hit', orbit, '?섏옄', 0.18);
+    pushFeedback(room, 'hit', orbit, '의자', 0.18);
   }
 }
 
@@ -933,7 +940,7 @@ function moveZombieWithPatterns(room: Room, zombie: Zombie, desired: Vec2, targe
       state.dashUntil = now + 0.34;
       state.dashDirection = desired;
       state.nextSpecialAt = now + 2.8 + Math.random() * 2.2;
-      pushFeedback(room, 'hit', zombie.position, '?뚯쭊', 0.18);
+      pushFeedback(room, 'hit', zombie.position, '돌진', 0.18);
     } else if (zombie.type === 'normal' && now >= state.leapCooldownUntil && targetDistance < 460) {
       const leaped = tryLeapWall(room, zombie, desired);
       state.leapCooldownUntil = now + 5.5 + Math.random() * 2.5;
@@ -988,7 +995,7 @@ function tryLeapWall(room: Room, zombie: Zombie, desired: Vec2) {
   }, ZOMBIE_RADIUS);
   if (collidesWithWalls(landing, ZOMBIE_RADIUS, room.walls) || collidesWithFacilities(room, landing, ZOMBIE_RADIUS)) return false;
   zombie.position = landing;
-  pushFeedback(room, 'hit', landing, '?꾩빟', 0.18);
+  pushFeedback(room, 'hit', landing, '도약', 0.18);
   return true;
 }
 
@@ -1026,7 +1033,7 @@ function damageBlockingWall(room: Room, zombie: Zombie, targetPoint: Vec2) {
   if (nextHp > 0) return;
   room.walls = room.walls.filter((candidate) => wallKey(candidate) !== key);
   room.wallHp.delete(key);
-  pushFeedback(room, 'hit', rectCenter(wall), '?뚭눼', 0.15);
+  pushFeedback(room, 'hit', rectCenter(wall), '파괴', 0.15);
 }
 
 function wallHp(wall: Wall) {
@@ -1080,11 +1087,11 @@ io.on('connection', (socket) => {
     const room = existing ?? createRoom(roomId, payload.settings);
     if (!existing) rooms.set(roomId, room);
     if (room.phase !== 'lobby' && room.phase !== 'ended') {
-      socket.emit('errorMessage', '吏꾪뻾 以묒씤 諛⑹뿉???낆옣?????놁뒿?덈떎.');
+      socket.emit('errorMessage', '진행 중인 방에는 입장할 수 없습니다.');
       return;
     }
     if (room.players.size >= room.settings.maxPlayers) {
-      socket.emit('errorMessage', '諛??뺤썝??媛??李쇱뒿?덈떎.');
+      socket.emit('errorMessage', '방 정원이 가득 찼습니다.');
       return;
     }
 
