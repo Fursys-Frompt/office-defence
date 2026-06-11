@@ -13,25 +13,25 @@ export const RESOURCE_LABELS: Record<ResourceType, string> = {
 };
 
 export const EQUIPMENT_LABELS: Record<ResourceType, string> = {
-  chairParts: '의자 방어막',
-  deskParts: '책상 포화',
-  partitionMaterial: '파티션 방호',
-  powerModule: '전력 코어',
-  medKit: '구급 비축'
+  chairParts: '근접 방어',
+  deskParts: '사거리 부품',
+  partitionMaterial: '피해 완화',
+  powerModule: '전력 장판',
+  medKit: '소모 회복'
 };
 
 export const EQUIPMENT_DESCRIPTIONS: Record<ResourceType, string> = {
-  chairParts: '주변 피해',
-  deskParts: '자동 사격',
-  partitionMaterial: '피해 감소',
-  powerModule: '공격 강화',
-  medKit: '체력 보조'
+  chairParts: '짧은 범위 방어',
+  deskParts: '공격 사거리 증가',
+  partitionMaterial: '받는 피해 감소',
+  powerModule: '사용 시 강화 구역',
+  medKit: '사용 시 체력 회복'
 };
 
 export const FACILITY_LABELS: Record<FacilityType, string> = {
   partitionBarricade: '파티션',
   deskBarricade: '책상',
-  medStation: '구급함',
+  medStation: '구급소',
   powerAmplifier: '증폭기'
 };
 

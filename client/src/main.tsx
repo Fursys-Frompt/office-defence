@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { io, Socket } from 'socket.io-client';
 import type {
@@ -8,6 +8,7 @@ import type {
   GameSnapshot,
   PlayerInput,
   ResourceType,
+  RoomSummary,
   RoomSettings,
   ServerToClientEvents,
   Vec2
@@ -39,6 +40,9 @@ const INPUT_SEND_MS = 33;
 const CAMERA_FOLLOW_AMOUNT = 0.62;
 const LOCAL_PLAYER_FOLLOW_AMOUNT = 0.84;
 const REMOTE_ENTITY_FOLLOW_AMOUNT = 0.36;
+const BASE_ATTACK_RANGE = 360;
+const DESK_RANGE_BONUS = 18;
+const POWER_ZONE_RANGE_BONUS = 110;
 const RESOURCE_SPRITES: Record<ResourceType, { col: number; row: number; size: number }> = {
   chairParts: { col: 0, row: 0, size: 34 },
   deskParts: { col: 1, row: 0, size: 34 },
@@ -64,10 +68,10 @@ const DECOR_SPRITES = [
   { col: 3, row: 3, position: { x: 1490, y: 128 }, size: 84 }
 ] as const;
 const AVATARS = [
-  { id: 0, label: '어반 틸', col: 0, row: 0 },
-  { id: 1, label: '시그널 코랄', col: 1, row: 0 },
-  { id: 2, label: '유틸리티 골드', col: 0, row: 1 },
-  { id: 3, label: '나이트 바이올렛', col: 1, row: 1 }
+  { id: 0, label: '오피스 틸', col: 0, row: 0 },
+  { id: 1, label: '핑크 코랄', col: 1, row: 0 },
+  { id: 2, label: '골드 가드', col: 0, row: 1 },
+  { id: 3, label: '바이올렛', col: 1, row: 1 }
 ] as const;
 const CANVAS_AVATAR_STYLES = [
   { hair: '#20282c', cloth: '#f4f7f1', accent: '#6fd7c8', cosmetic: 'pin' },
@@ -85,7 +89,12 @@ type MotionSample = {
 const motionSamples = new Map<string, MotionSample>();
 const renderPositions = new Map<string, Vec2>();
 
-function App() {
+type PendingRoomAction = {
+  mode: 'create' | 'join';
+  roomId?: string;
+};
+
+function LobbyApp() {
   const [nickname, setNickname] = useState('');
   const [roomInput, setRoomInput] = useState('');
   const [roomId, setRoomId] = useState('');
@@ -93,94 +102,143 @@ function App() {
   const [avatarId, setAvatarId] = useState(0);
   const [error, setError] = useState('');
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
+  const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const [pendingAction, setPendingAction] = useState<PendingRoomAction | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [settings, setSettings] = useState<RoomSettings>({
     maxPlayers: 6,
     gameDurationSec: 180,
     pvpEnabled: false
   });
 
+  const refreshRooms = () => {
+    socket.emit('requestRoomList', setRooms);
+  };
+
   useEffect(() => {
     socket.on('joined', (payload) => {
       setRoomId(payload.roomId);
       setPlayerId(payload.playerId);
+      setPendingAction(null);
       setError('');
     });
+    socket.on('connect', refreshRooms);
     socket.on('snapshot', setSnapshot);
     socket.on('errorMessage', setError);
+    refreshRooms();
+    const roomRefreshTimer = window.setInterval(refreshRooms, 2500);
     return () => {
+      window.clearInterval(roomRefreshTimer);
+      socket.off('connect', refreshRooms);
       socket.off('joined');
       socket.off('snapshot');
       socket.off('errorMessage');
     };
   }, []);
 
+  useEffect(() => {
+    if (snapshot?.phase === 'lobby') setSettings(snapshot.settings);
+  }, [snapshot?.phase, snapshot?.settings]);
+
   const me = snapshot?.players.find((player) => player.id === playerId);
   const readyCount = snapshot?.players.filter((player) => player.ready).length ?? 0;
+
+  const openJoinModal = (nextRoomId?: string) => {
+    setError('');
+    setPendingAction({ mode: 'join', roomId: nextRoomId });
+  };
+
+  const confirmRoomAction = () => {
+    if (!pendingAction) return;
+    socket.emit('joinRoom', {
+      nickname: nickname.trim() || '생존자',
+      roomId: pendingAction.mode === 'join' ? pendingAction.roomId : undefined,
+      avatarId
+    });
+  };
+
+  const leaveRoom = () => {
+    socket.emit('leaveRoom');
+    setRoomId('');
+    setPlayerId('');
+    setSnapshot(null);
+    refreshRooms();
+  };
 
   if (!snapshot || !me) {
     return (
       <main className="shell intro">
-        <section className="join-panel">
-          <div>
-            <p className="eyebrow">퍼시스 스마트 오피스</p>
+        <section className="join-panel room-browser">
+          <div className="lobby-title">
+            <p className="eyebrow">Mission Lobby</p>
             <h1>오피스 좀비 서바이벌</h1>
-            <p className="subtitle">사무실 곳곳의 부품을 모아 장비를 강화하고, 몰려오는 좀비를 막아 제한 시간 동안 가장 높은 생존 점수를 노리세요.</p>
+            <p className="subtitle">대기중인 방에 입장하거나 새 방을 만들어 팀 생존을 시작하세요.</p>
           </div>
-          <label>
-            닉네임
-            <input value={nickname} maxLength={16} onChange={(event) => setNickname(event.target.value)} placeholder="생존자" />
-          </label>
-          <label>
-            방 코드
-            <input value={roomInput} maxLength={8} onChange={(event) => setRoomInput(event.target.value.toUpperCase())} placeholder="새 방을 만들려면 비워두세요" />
-          </label>
-          <div className="avatar-picker" aria-label="아바타 선택">
-            {AVATARS.map((avatar) => (
-              <button
-                key={avatar.id}
-                type="button"
-                className={avatarId === avatar.id ? 'avatar-option active' : 'avatar-option'}
-                onClick={() => setAvatarId(avatar.id)}
-                title={avatar.label}
-              >
-                <span
-                  className="avatar-thumb"
-                  style={{
-                    backgroundImage: `url(${avatarAtlasUrl})`,
-                    backgroundPosition: spriteBackgroundPosition(avatar.col, avatar.row, 2, 2)
-                  }}
-                />
-              </button>
-            ))}
+
+          <div className="lobby-actions">
+            <button type="button" onClick={() => setGuideOpen(true)}>게임 설명</button>
+            <button type="button" className="primary" onClick={() => setPendingAction({ mode: 'create' })}>방 생성</button>
           </div>
-          <div className="avatar-preview">
-            <span
-              className="avatar-preview-image"
-              style={{
-                backgroundImage: `url(${avatarAtlasUrl})`,
-                backgroundPosition: spriteBackgroundPosition(AVATARS[avatarId].col, AVATARS[avatarId].row, 2, 2)
-              }}
-            />
-            <div>
-              <strong>{AVATARS[avatarId].label}</strong>
-              <span>외형만 바뀌며 능력 차이는 없습니다.</span>
+
+          <div className="direct-room">
+            <label>
+              방 코드 직접 입력
+              <input
+                value={roomInput}
+                maxLength={8}
+                onChange={(event) => setRoomInput(event.target.value.toUpperCase())}
+                placeholder="예: ABC123"
+              />
+            </label>
+            <button type="button" onClick={() => roomInput.trim() && openJoinModal(roomInput.trim().toUpperCase())}>코드로 입장</button>
+          </div>
+
+          <section className="room-list" aria-label="생성된 방 목록">
+            <div className="room-list-header">
+              <strong>대기중인 방</strong>
+              <button type="button" onClick={refreshRooms}>새로고침</button>
             </div>
-          </div>
-          <button
-            className="primary cta"
-            onClick={() =>
-              socket.emit('joinRoom', {
-                nickname: nickname || '생존자',
-                roomId: roomInput || undefined,
-                avatarId,
-                settings
+            {rooms.length === 0 ? (
+              <p className="empty-room">입장 가능한 방이 없습니다.</p>
+            ) : (
+              rooms.map((room) => {
+                const full = room.playerCount >= room.maxPlayers;
+                return (
+                  <button
+                    key={room.roomId}
+                    type="button"
+                    className="room-card"
+                    disabled={full}
+                    onClick={() => openJoinModal(room.roomId)}
+                  >
+                    <span>
+                      <strong>{room.roomId}</strong>
+                      <em>방장 {room.hostNickname}</em>
+                    </span>
+                    <span>{room.playerCount}/{room.maxPlayers}</span>
+                    <span>{Math.round(room.gameDurationSec / 60)}분</span>
+                    <span className={room.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{room.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
+                  </button>
+                );
               })
-            }
-          >
-            방 입장하기
-          </button>
+            )}
+          </section>
+
           {error && <p className="error">{error}</p>}
         </section>
+
+        {guideOpen && <GameGuideModal onClose={() => setGuideOpen(false)} />}
+        {pendingAction && (
+          <ProfileModal
+            action={pendingAction}
+            nickname={nickname}
+            avatarId={avatarId}
+            onNicknameChange={setNickname}
+            onAvatarChange={setAvatarId}
+            onCancel={() => setPendingAction(null)}
+            onConfirm={confirmRoomAction}
+          />
+        )}
       </main>
     );
   }
@@ -191,21 +249,22 @@ function App() {
         <section className="panel">
           <div className="room-header">
             <div>
-              <p className="eyebrow">미션 대기실</p>
+              <p className="eyebrow">Mission Room</p>
               <h1>{roomId}</h1>
               <div className="room-meta">
-                <span>참가자 {snapshot.players.length}/{snapshot.settings.maxPlayers}</span>
+                <span>참가 {snapshot.players.length}/{snapshot.settings.maxPlayers}</span>
                 <span>준비 {readyCount}/{snapshot.players.length}</span>
                 <span>{Math.round(snapshot.settings.gameDurationSec / 60)}분</span>
+                <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
               </div>
             </div>
-            <button onClick={() => socket.emit('leaveRoom')}>나가기</button>
+            <button onClick={leaveRoom}>나가기</button>
           </div>
           <div className="player-list">
             {snapshot.players.map((player) => (
               <div key={player.id} className="player-row">
                 <span>{player.nickname}{player.host ? ' / 방장' : ''}</span>
-                <strong className={player.ready ? 'status ready' : 'status wait'}>{player.ready ? '준비 완료' : '대기 중'}</strong>
+                <strong className={player.ready ? 'status ready' : 'status wait'}>{player.ready ? '준비 완료' : '대기중'}</strong>
               </div>
             ))}
           </div>
@@ -256,7 +315,7 @@ function App() {
     return (
       <main className="shell result">
         <section className="panel">
-          <p className="eyebrow">게임 결과</p>
+          <p className="eyebrow">Game Result</p>
           <h1>생존 순위</h1>
           <div className="ranking">
             {ranking.map((player, index) => (
@@ -277,12 +336,114 @@ function App() {
 
   return <GameView snapshot={snapshot} playerId={playerId} />;
 }
+
+function GameGuideModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <section className="modal-card guide-modal">
+        <div className="modal-header">
+          <h2>게임 설명</h2>
+          <button type="button" onClick={onClose}>닫기</button>
+        </div>
+        <div className="guide-grid">
+          <article>
+            <strong>목표</strong>
+            <p>제한 시간 동안 좀비를 막고 점수를 올립니다. 모든 플레이어가 쓰러지면 실패합니다.</p>
+          </article>
+          <article>
+            <strong>아이템</strong>
+            <p>책상은 사거리를 늘리고, 파티션은 피해를 줄입니다. 구급과 전력은 직접 사용해야 합니다.</p>
+          </article>
+          <article>
+            <strong>조작</strong>
+            <p>WASD로 이동합니다. 자동 조준이 가까운 대상을 공격합니다. Q는 구급, E는 전력 장판입니다.</p>
+          </article>
+          <article>
+            <strong>난이도</strong>
+            <p>아이템을 모으기 전에는 공격 범위가 짧습니다. 벽과 장판 위치를 활용해야 안정적으로 버팁니다.</p>
+          </article>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ProfileModal({
+  action,
+  nickname,
+  avatarId,
+  onNicknameChange,
+  onAvatarChange,
+  onCancel,
+  onConfirm
+}: {
+  action: PendingRoomAction;
+  nickname: string;
+  avatarId: number;
+  onNicknameChange: (value: string) => void;
+  onAvatarChange: (value: number) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <section className="modal-card profile-modal">
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">{action.mode === 'create' ? 'Create Room' : 'Join Room'}</p>
+            <h2>{action.mode === 'create' ? '방 생성' : `${action.roomId} 입장`}</h2>
+          </div>
+          <button type="button" onClick={onCancel}>닫기</button>
+        </div>
+        <label>
+          닉네임
+          <input value={nickname} maxLength={16} onChange={(event) => onNicknameChange(event.target.value)} placeholder="생존자" />
+        </label>
+        <div className="avatar-picker" aria-label="캐릭터 선택">
+          {AVATARS.map((avatar) => (
+            <button
+              key={avatar.id}
+              type="button"
+              className={avatarId === avatar.id ? 'avatar-option active' : 'avatar-option'}
+              onClick={() => onAvatarChange(avatar.id)}
+              title={avatar.label}
+            >
+              <span
+                className="avatar-thumb"
+                style={{
+                  backgroundImage: `url(${avatarAtlasUrl})`,
+                  backgroundPosition: spriteBackgroundPosition(avatar.col, avatar.row, 2, 2)
+                }}
+              />
+            </button>
+          ))}
+        </div>
+        <div className="avatar-preview compact">
+          <span
+            className="avatar-preview-image"
+            style={{
+              backgroundImage: `url(${avatarAtlasUrl})`,
+              backgroundPosition: spriteBackgroundPosition(AVATARS[avatarId].col, AVATARS[avatarId].row, 2, 2)
+            }}
+          />
+          <div>
+            <strong>{AVATARS[avatarId].label}</strong>
+            <span>외형만 바뀌며 능력 차이는 없습니다.</span>
+          </div>
+        </div>
+        <button className="primary cta" onClick={onConfirm}>{action.mode === 'create' ? '방 만들기' : '입장하기'}</button>
+      </section>
+    </div>
+  );
+}
+
 function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: string }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const latestRender = useRef<{ snapshot: GameSnapshot; me: NonNullable<typeof snapshot.players[number]> } | null>(null);
   const pressed = useRef(new Set<string>());
   const pointer = useRef<Vec2>({ x: 1, y: 0 });
   const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
+  const queuedItem = useRef<ResourceType | undefined>(undefined);
   const seenFeedback = useRef(new Set<string>());
   const visualEffects = useRef<VisualEffect[]>([]);
   const audio = useRef(createAudioEngine());
@@ -295,6 +456,8 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     const onKeyDown = (event: KeyboardEvent) => {
       audio.current.unlock();
       pressed.current.add(event.code);
+      if (event.code === 'KeyQ') queuedItem.current = 'medKit';
+      if (event.code === 'KeyE') queuedItem.current = 'powerModule';
     };
     const onKeyUp = (event: KeyboardEvent) => pressed.current.delete(event.code);
     window.addEventListener('keydown', onKeyDown);
@@ -308,13 +471,16 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   useEffect(() => {
     const id = window.setInterval(() => {
       const move = keyboardMove(pressed.current, joystick.current?.value);
-      const autoAim = me ? getAutoAim(snapshot, me.position) : undefined;
+      const autoAim = me ? getAutoAim(snapshot, me) : undefined;
       const aim = autoAim ? autoAim.direction : pointer.current;
+      const useItem = queuedItem.current;
+      queuedItem.current = undefined;
       const input: PlayerInput = {
         move,
         aim,
-        shooting: Boolean(autoAim && autoAim.distance <= 640),
-        melee: false
+        shooting: Boolean(autoAim && me && autoAim.distance <= playerAttackRange(snapshot, me)),
+        melee: false,
+        useItem
       };
       socket.emit('input', input);
     }, INPUT_SEND_MS);
@@ -420,7 +586,14 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       </section>
       <section className="hud inventory-hud">
         {resourceKeys.map((resource) => (
-          <span key={resource} className={`inventory-chip ${(me?.inventory[resource] ?? 0) > 0 ? 'has' : 'empty'}`}>
+          <button
+            key={resource}
+            type="button"
+            className={`inventory-chip ${(me?.inventory[resource] ?? 0) > 0 ? 'has' : 'empty'} ${resource === 'medKit' || resource === 'powerModule' ? 'usable' : ''}`}
+            onClick={() => {
+              if (resource === 'medKit' || resource === 'powerModule') queuedItem.current = resource;
+            }}
+          >
             <i
               style={{
                 backgroundImage: `url(${propAtlasUrl})`,
@@ -429,7 +602,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
             />
             <b>{me?.inventory[resource] ?? 0}</b>
             <em>{RESOURCE_LABELS[resource]}</em>
-          </span>
+          </button>
         ))}
       </section>
       <section className="hud mission-hud top-right">
@@ -441,7 +614,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       {combo >= 2 && (
         <section className="hud combo-hud">
           <strong>x{combo}</strong>
-          <span>연속 처치</span>
+          <span>?곗냽 泥섏튂</span>
         </section>
       )}
       <section className="hud ranking-mini">
@@ -452,8 +625,8 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       {snapshot.phase === 'countdown' && <div className="countdown">{snapshot.countdown}</div>}
       <section className="equipment-bar">
         <div className="build-state">
-          <strong>자동 장비</strong>
-          <span>부품을 모으면 자동 강화</span>
+          <strong>?먮룞 ?λ퉬</strong>
+          <span>遺?덉쓣 紐⑥쑝硫??먮룞 媛뺥솕</span>
         </div>
         {resourceKeys.map((resource) => (
           <div key={resource} className={`equipment-chip ${(me?.inventory[resource] ?? 0) > 0 ? 'active' : ''}`}>
@@ -479,10 +652,10 @@ function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
 }
 
 function getThreatLabel(wave: number) {
-  if (wave >= 8) return { label: '매우 높음', tone: 'extreme' };
-  if (wave >= 5) return { label: '높음', tone: 'high' };
-  if (wave >= 3) return { label: '보통', tone: 'mid' };
-  return { label: '낮음', tone: 'low' };
+  if (wave >= 8) return { label: '留ㅼ슦 ?믪쓬', tone: 'extreme' };
+  if (wave >= 5) return { label: '?믪쓬', tone: 'high' };
+  if (wave >= 3) return { label: '蹂댄넻', tone: 'mid' };
+  return { label: '??쓬', tone: 'low' };
 }
 
 function spriteBackgroundPosition(col: number, row: number, columns: number, rows: number) {
@@ -594,22 +767,38 @@ function useGameImage(url: string) {
   return image;
 }
 
-function getAutoAim(snapshot: GameSnapshot, position: Vec2) {
-  const candidates = snapshot.zombies
-    .map((zombie) => ({
+function getAutoAim(snapshot: GameSnapshot, player: NonNullable<GameSnapshot['players'][number]>) {
+  const candidates = [
+    ...snapshot.zombies.map((zombie) => ({
       position: zombie.position,
-      distance: Math.hypot(zombie.position.x - position.x, zombie.position.y - position.y)
-    }))
+      distance: Math.hypot(zombie.position.x - player.position.x, zombie.position.y - player.position.y)
+    })),
+    ...(snapshot.settings.pvpEnabled
+      ? snapshot.players
+          .filter((target) => target.id !== player.id && target.alive)
+          .map((target) => ({
+            position: target.position,
+            distance: Math.hypot(target.position.x - player.position.x, target.position.y - player.position.y)
+          }))
+      : [])
+  ]
     .sort((a, b) => a.distance - b.distance);
   const target = candidates[0];
   if (!target) return undefined;
-  const dx = target.position.x - position.x;
-  const dy = target.position.y - position.y;
+  const dx = target.position.x - player.position.x;
+  const dy = target.position.y - player.position.y;
   const size = Math.max(1, Math.hypot(dx, dy));
   return {
     distance: target.distance,
     direction: { x: dx / size, y: dy / size }
   };
+}
+
+function playerAttackRange(snapshot: GameSnapshot, player: GameSnapshot['players'][number]) {
+  const zoneBonus = snapshot.powerZones.some((zone) => Math.hypot(zone.position.x - player.position.x, zone.position.y - player.position.y) <= zone.radius)
+    ? POWER_ZONE_RANGE_BONUS
+    : 0;
+  return BASE_ATTACK_RANGE + player.inventory.deskParts * DESK_RANGE_BONUS + zoneBonus;
 }
 
 function drawGame(
@@ -636,6 +825,9 @@ function drawGame(
   }
   for (const resource of snapshot.resources) {
     drawWorldResource(context, propAtlas, resource.type, resource.position);
+  }
+  for (const zone of snapshot.powerZones) {
+    drawPowerZone(context, zone);
   }
   for (const facility of snapshot.facilities) {
     drawWorldFacility(context, propAtlas, facility.type, facility.position);
@@ -667,11 +859,14 @@ function drawGame(
     const frame = moving ? walkFrame(now, SPRITES.player.frameMs, motion.lastMovedAt) : 0;
     const pulse = moving ? framePulse(frame) : 0;
     const renderDirection = moving ? motion.direction : player.aim;
-    const drawPosition = smoothRenderPosition(
+    const impact = getActiveImpact(player.position, effects);
+    const shake = impact ? Math.sin((performance.now() - impact.startedAt) * 0.16) * (1 - impact.age) * 7 : 0;
+    const baseDrawPosition = smoothRenderPosition(
       `player:${player.id}`,
       player.position,
       player.id === socket.id ? LOCAL_PLAYER_FOLLOW_AMOUNT : REMOTE_ENTITY_FOLLOW_AMOUNT
     );
+    const drawPosition = { x: baseDrawPosition.x + shake, y: baseDrawPosition.y };
     context.globalAlpha = player.alive ? 1 : 0.35;
     drawShadow(context, drawPosition, 28 + pulse * 3);
     const accentColor = player.id === socket.id ? '#7bdff2' : playerColor(player.id);
@@ -679,6 +874,7 @@ function drawGame(
     if (avatarAtlas) drawMotionAtlasSprite(context, avatarAtlas, sprite.col, sprite.row, 2, 2, drawPosition, sprite.size, renderDirection, pulse);
     else if (spriteSheet) drawAnimatedSprite(context, spriteSheet, SPRITES.player.row, frame, drawPosition, SPRITES.player.size, renderDirection, pulse);
     else drawPlayerUnit(context, drawPosition, player.avatarId);
+    if (impact) drawPlayerHitFlash(context, drawPosition, impact.age);
     context.strokeStyle = accentColor;
     context.lineWidth = player.id === socket.id ? 3 : 2;
     context.beginPath();
@@ -926,10 +1122,28 @@ function drawGroundBlob(context: CanvasRenderingContext2D, position: Vec2, width
   context.fill();
 }
 
+function drawPowerZone(context: CanvasRenderingContext2D, zone: GameSnapshot['powerZones'][number]) {
+  const pulse = 0.5 + Math.sin(performance.now() * 0.008) * 0.5;
+  context.save();
+  context.fillStyle = `rgba(123, 223, 242, ${0.12 + pulse * 0.05})`;
+  context.strokeStyle = 'rgba(255, 224, 108, 0.62)';
+  context.lineWidth = 3;
+  context.setLineDash([10, 8]);
+  context.beginPath();
+  context.arc(zone.position.x, zone.position.y, zone.radius, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.setLineDash([]);
+  context.fillStyle = 'rgba(255, 244, 163, 0.72)';
+  context.beginPath();
+  context.arc(zone.position.x, zone.position.y, 10 + pulse * 4, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+}
+
 function drawEquipmentAuras(context: CanvasRenderingContext2D, player: GameSnapshot['players'][number]) {
   const chairLevel = player.inventory.chairParts;
   const panelLevel = player.inventory.partitionMaterial;
-  const powerLevel = player.inventory.powerModule;
   const now = performance.now() / 1000;
 
   context.save();
@@ -937,23 +1151,14 @@ function drawEquipmentAuras(context: CanvasRenderingContext2D, player: GameSnaps
     context.strokeStyle = 'rgba(126, 220, 155, 0.26)';
     context.lineWidth = Math.min(8, 2 + panelLevel * 0.6);
     context.beginPath();
-    context.arc(player.position.x, player.position.y, 92 + panelLevel * 8, 0, Math.PI * 2);
+    context.arc(player.position.x, player.position.y, 70 + panelLevel * 6, 0, Math.PI * 2);
     context.stroke();
-  }
-  if (powerLevel > 0) {
-    context.strokeStyle = 'rgba(123, 223, 242, 0.34)';
-    context.lineWidth = 3;
-    context.setLineDash([8, 8]);
-    context.beginPath();
-    context.arc(player.position.x, player.position.y, 34 + Math.min(powerLevel, 10) * 2, now, Math.PI * 2 + now);
-    context.stroke();
-    context.setLineDash([]);
   }
   if (chairLevel > 0) {
     context.fillStyle = 'rgba(240, 200, 106, 0.86)';
     context.strokeStyle = 'rgba(23, 59, 63, 0.38)';
     const count = Math.min(5, 1 + Math.floor(chairLevel / 2));
-    const radius = 58 + chairLevel * 7;
+    const radius = 42 + chairLevel * 5;
     for (let i = 0; i < count; i += 1) {
       const angle = now * 3.4 + (Math.PI * 2 * i) / count;
       const x = player.position.x + Math.cos(angle) * Math.min(radius, 96);
@@ -1344,10 +1549,10 @@ function drawPlayerNameplate(
 function fitCanvasText(context: CanvasRenderingContext2D, text: string, maxWidth: number) {
   if (context.measureText(text).width <= maxWidth) return text;
   let result = text;
-  while (result.length > 1 && context.measureText(`${result}...`).width > maxWidth) {
+  while (result.length > 1 && context.measureText(result + '...').width > maxWidth) {
     result = result.slice(0, -1);
   }
-  return `${result}...`;
+  return result + '...';
 }
 
 function playerColor(id: string) {
@@ -1388,6 +1593,29 @@ function drawImpactFlash(
     context.beginPath();
     context.moveTo(position.x + Math.cos(angle) * inner, position.y + Math.sin(angle) * inner * 0.65);
     context.lineTo(position.x + Math.cos(angle) * outer, position.y + Math.sin(angle) * outer * 0.65);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawPlayerHitFlash(context: CanvasRenderingContext2D, position: Vec2, age: number) {
+  context.save();
+  context.globalAlpha = (1 - age) * 0.78;
+  context.strokeStyle = 'rgba(255, 87, 78, 0.88)';
+  context.fillStyle = 'rgba(255, 87, 78, 0.16)';
+  context.lineWidth = 4;
+  context.lineCap = 'round';
+  context.beginPath();
+  context.arc(position.x, position.y + 2, 30 + age * 14, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  for (let i = 0; i < 4; i += 1) {
+    const angle = i * Math.PI * 0.5 + age * 0.6;
+    const inner = 18 + age * 6;
+    const outer = 34 + age * 18;
+    context.beginPath();
+    context.moveTo(position.x + Math.cos(angle) * inner, position.y + Math.sin(angle) * inner * 0.72);
+    context.lineTo(position.x + Math.cos(angle) * outer, position.y + Math.sin(angle) * outer * 0.72);
     context.stroke();
   }
   context.restore();
@@ -1625,7 +1853,10 @@ function drawOfficeFloor(
 
 function Root() {
   const params = new URLSearchParams(window.location.search);
-  return params.get('concept') === '1' ? <ConceptArtBoard /> : <App />;
+  return params.get('concept') === '1' ? <ConceptArtBoard /> : <LobbyApp />;
 }
 
-createRoot(document.getElementById('root')!).render(<Root />);
+const rootElement = document.getElementById('root')!;
+const rootStore = window as typeof window & { __zombieOfficeRoot?: ReturnType<typeof createRoot> };
+rootStore.__zombieOfficeRoot ??= createRoot(rootElement);
+rootStore.__zombieOfficeRoot.render(<Root />);

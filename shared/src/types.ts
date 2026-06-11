@@ -20,6 +20,7 @@ export type PlayerInput = {
   aim: Vec2;
   shooting: boolean;
   melee: boolean;
+  useItem?: ResourceType;
   build?: FacilityType;
 };
 
@@ -64,6 +65,14 @@ export type Facility = {
   position: Vec2;
 };
 
+export type PowerZone = {
+  id: string;
+  ownerId: string;
+  position: Vec2;
+  radius: number;
+  ttl: number;
+};
+
 export type Projectile = {
   id: string;
   ownerId: string;
@@ -96,6 +105,7 @@ export type GameSnapshot = {
   zombies: Zombie[];
   resources: ResourceNode[];
   facilities: Facility[];
+  powerZones: PowerZone[];
   projectiles: Projectile[];
   walls: Wall[];
   feedbackEvents: FeedbackEvent[];
@@ -115,14 +125,27 @@ export type JoinRoomPayload = {
   settings?: RoomSettings;
 };
 
+export type RoomSummary = {
+  roomId: string;
+  phase: GamePhase;
+  playerCount: number;
+  maxPlayers: number;
+  readyCount: number;
+  gameDurationSec: number;
+  pvpEnabled: boolean;
+  hostNickname: string;
+};
+
 export type ServerToClientEvents = {
   joined: (payload: { roomId: string; playerId: string }) => void;
   snapshot: (snapshot: GameSnapshot) => void;
+  roomList: (rooms: RoomSummary[]) => void;
   errorMessage: (message: string) => void;
 };
 
 export type ClientToServerEvents = {
   joinRoom: (payload: JoinRoomPayload) => void;
+  requestRoomList: (callback?: (rooms: RoomSummary[]) => void) => void;
   setReady: (ready: boolean) => void;
   updateSettings: (settings: RoomSettings) => void;
   input: (input: PlayerInput) => void;

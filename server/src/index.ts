@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import { createServer } from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -15,6 +15,7 @@ import type {
   ResourceInventory,
   ResourceNode,
   ResourceType,
+  RoomSummary,
   RoomSettings,
   ServerToClientEvents,
   Vec2,
@@ -33,6 +34,7 @@ type Room = {
   zombies: Zombie[];
   resources: ResourceNode[];
   facilities: Facility[];
+  powerZones: GameSnapshot['powerZones'];
   projectiles: GameSnapshot['projectiles'];
   feedbackEvents: Array<FeedbackEvent & { ttl: number }>;
   wave: number;
@@ -62,6 +64,13 @@ const ZOMBIE_RADIUS = 16;
 const RESOURCE_RADIUS = 16;
 const FACILITY_RADIUS = 28;
 const PROJECTILE_RADIUS = 5;
+const PROJECTILE_SPEED = 700;
+const BASE_ATTACK_RANGE = 360;
+const DESK_RANGE_BONUS = 18;
+const POWER_ZONE_RADIUS = 145;
+const POWER_ZONE_TTL = 8;
+const POWER_ZONE_DAMAGE_BONUS = 0.35;
+const POWER_ZONE_RANGE_BONUS = 110;
 const DEFAULT_SETTINGS: RoomSettings = {
   maxPlayers: 6,
   gameDurationSec: 180,
@@ -73,6 +82,12 @@ const socketRooms = new Map<string, string>();
 const killTimers = new Map<string, number>();
 const equipmentTimers = new Map<string, number>();
 const feedbackTimers = new Map<string, number>();
+const zombieAiTimers = new Map<string, {
+  nextSpecialAt: number;
+  dashUntil: number;
+  dashDirection: Vec2;
+  leapCooldownUntil: number;
+}>();
 
 const walls: Wall[] = [
   { x: 0, y: 0, width: MAP_WIDTH, height: 24 },
@@ -98,6 +113,7 @@ function createRoom(id: string, settings?: Partial<RoomSettings>): Room {
     zombies: [],
     resources: [],
     facilities: [],
+    powerZones: [],
     projectiles: [],
     feedbackEvents: [],
     wave: 1,
@@ -184,6 +200,7 @@ function snapshot(room: Room): GameSnapshot {
     zombies: room.zombies,
     resources: room.resources,
     facilities: room.facilities,
+    powerZones: room.powerZones,
     projectiles: room.projectiles,
     walls: room.walls,
     feedbackEvents: room.feedbackEvents.map(({ ttl: _ttl, ...event }) => event),
@@ -198,9 +215,34 @@ function broadcast(room: Room) {
   io.to(room.id).emit('snapshot', snapshot(room));
 }
 
+function roomSummaries(): RoomSummary[] {
+  return [...rooms.values()]
+    .filter((room) => room.phase === 'lobby')
+    .map((room) => {
+      const players = [...room.players.values()];
+      const host = players.find((player) => player.host) ?? players[0];
+      return {
+        roomId: room.id,
+        phase: room.phase,
+        playerCount: players.length,
+        maxPlayers: room.settings.maxPlayers,
+        readyCount: players.filter((player) => player.ready).length,
+        gameDurationSec: room.settings.gameDurationSec,
+        pvpEnabled: room.settings.pvpEnabled,
+        hostNickname: host?.nickname ?? 'Host'
+      };
+    })
+    .sort((a, b) => a.roomId.localeCompare(b.roomId));
+}
+
+function broadcastRoomList() {
+  io.emit('roomList', roomSummaries());
+}
+
 function startCountdown(room: Room) {
   room.phase = 'countdown';
   room.countdown = 3;
+  broadcastRoomList();
 }
 
 function startGame(room: Room) {
@@ -211,13 +253,15 @@ function startGame(room: Room) {
   room.lastWaveAt = 0;
   room.nextZombieSpawnAt = 2.2;
   room.nextResourceSpawnAt = 0;
+  clearZombieAiTimers(room);
   room.zombies = [];
   room.projectiles = [];
   room.facilities = [];
+  room.powerZones = [];
   room.feedbackEvents = [];
   room.walls = walls.map((wall) => ({ ...wall }));
   room.wallHp = new Map();
-  room.resources = Array.from({ length: 20 }, () => createResource());
+  room.resources = Array.from({ length: 14 }, () => createResource());
   for (const player of room.players.values()) {
     killTimers.delete(comboKey(room, player.id));
     clearEquipmentTimers(room, player.id);
@@ -231,8 +275,8 @@ function startGame(room: Room) {
     player.kills = 0;
     player.combo = 0;
     player.inventory = emptyInventory();
-    player.inventory.chairParts = 1;
-    player.inventory.deskParts = 1;
+    player.inventory.chairParts = 0;
+    player.inventory.deskParts = 0;
     player.resourcesCollected = 0;
     player.facilitiesBuilt = 0;
     player.survivalSec = 0;
@@ -259,6 +303,7 @@ function tickRoom(room: Room) {
   room.remainingSec -= DT;
   const elapsed = room.settings.gameDurationSec - room.remainingSec;
   room.wave = 1 + Math.floor(elapsed / 24);
+  updatePowerZones(room);
   updatePlayers(room, elapsed);
   updateProjectiles(room);
   updateZombies(room);
@@ -288,13 +333,16 @@ function updatePlayers(room: Room, elapsed: number) {
     const aim = normalize(input.aim);
     if (length(aim) > 0) player.aim = aim;
 
+    if (input.useItem) useItem(room, player, input.useItem);
+
     if (input.shooting && canAct(room, player.id, 'shoot', player.combo >= 5 ? 0.44 : 0.52)) {
+      const attackRange = playerAttackRange(room, player);
       room.projectiles.push({
         id: makeId('shot'),
         ownerId: player.id,
         position: { ...player.position },
-        velocity: { x: player.aim.x * 700, y: player.aim.y * 700 },
-        ttl: 1
+        velocity: { x: player.aim.x * PROJECTILE_SPEED, y: player.aim.y * PROJECTILE_SPEED },
+        ttl: attackRange / PROJECTILE_SPEED
       });
     }
     if (input.melee && canAct(room, player.id, 'melee', player.combo >= 4 ? 0.26 : 0.32)) {
@@ -320,14 +368,53 @@ function canAct(room: Room, playerId: string, action: string, cooldown: number) 
 function meleeAttack(room: Room, player: Player) {
   const damage = 28 + comboDamageBonus(player);
   for (const zombie of room.zombies) {
-    if (distance(player.position, zombie.position) < 72) damageZombie(room, zombie, damage, player.id);
+    if (distance(player.position, zombie.position) < 54) damageZombie(room, zombie, damage, player.id);
   }
   if (!room.settings.pvpEnabled) return;
   for (const target of room.players.values()) {
-    if (target.id !== player.id && target.alive && distance(player.position, target.position) < 58) {
+    if (target.id !== player.id && target.alive && distance(player.position, target.position) < 44) {
       damagePlayer(room, target, 20 + comboDamageBonus(player), player);
     }
   }
+}
+
+function useItem(room: Room, player: Player, type: ResourceType) {
+  if (player.inventory[type] <= 0 || !canAct(room, player.id, `use:${type}`, 0.35)) return;
+
+  if (type === 'medKit') {
+    if (player.hp >= player.maxHp - 1) return;
+    player.inventory.medKit -= 1;
+    player.hp = Math.min(player.maxHp, player.hp + 28);
+    pushFeedback(room, 'heal', player.position, '+28');
+    return;
+  }
+
+  if (type === 'powerModule') {
+    player.inventory.powerModule -= 1;
+    room.powerZones.push({
+      id: makeId('powerZone'),
+      ownerId: player.id,
+      position: { ...player.position },
+      radius: POWER_ZONE_RADIUS,
+      ttl: POWER_ZONE_TTL
+    });
+    pushFeedback(room, 'build', player.position, 'POWER');
+  }
+}
+
+function updatePowerZones(room: Room) {
+  room.powerZones = room.powerZones
+    .map((zone) => ({ ...zone, ttl: zone.ttl - DT }))
+    .filter((zone) => zone.ttl > 0);
+}
+
+function playerAttackRange(room: Room, player: Player) {
+  const zoneBonus = isInPowerZone(room, player.position) ? POWER_ZONE_RANGE_BONUS : 0;
+  return BASE_ATTACK_RANGE + player.inventory.deskParts * DESK_RANGE_BONUS + zoneBonus;
+}
+
+function isInPowerZone(room: Room, point: Vec2) {
+  return room.powerZones.some((zone) => distance(point, zone.position) <= zone.radius);
 }
 
 function buildFacility(room: Room, player: Player, type: FacilityType) {
@@ -376,11 +463,9 @@ function collectResources(room: Room, player: Player) {
     if (distance(player.position, resource.position) < PLAYER_RADIUS + RESOURCE_RADIUS) {
       player.inventory[resource.type] += 1;
       player.resourcesCollected += 1;
-      applyEquipmentUpgrade(player, resource.type);
       const score = resource.type === 'medKit' ? 8 : 5;
       player.score += score;
-      pushFeedback(room, 'collect', resource.position, `Lv ${player.inventory[resource.type]}`);
-      if (resource.type === 'medKit') pushFeedback(room, 'heal', player.position, '회복');
+      pushFeedback(room, 'collect', resource.position, `x${player.inventory[resource.type]}`);
       return false;
     }
     return true;
@@ -388,72 +473,61 @@ function collectResources(room: Room, player: Player) {
   if (before !== room.resources.length) room.nextResourceSpawnAt = Math.min(room.nextResourceSpawnAt, 1);
 }
 
-function applyEquipmentUpgrade(player: Player, type: ResourceType) {
-  if (type !== 'medKit') return;
-  player.maxHp = 100 + player.inventory.medKit * 8;
-  player.hp = Math.min(player.maxHp, player.hp + 22);
-}
-
 function updateEquipment(room: Room, player: Player, elapsed: number) {
-  const powerLevel = player.inventory.powerModule;
-  const medLevel = player.inventory.medKit;
-  if (medLevel > 0) {
-    player.maxHp = Math.max(player.maxHp, 100 + medLevel * 8);
-    player.hp = Math.min(player.maxHp, player.hp + (0.7 + medLevel * 0.22) * DT);
-  }
-  updateDeskBarrage(room, player, powerLevel);
-  updateChairShield(room, player, powerLevel, elapsed);
-  updatePanelGuard(room, player, powerLevel);
+  updateDeskBarrage(room, player);
+  updateChairShield(room, player, elapsed);
+  updatePanelGuard(room, player);
 }
 
-function updateDeskBarrage(room: Room, player: Player, powerLevel: number) {
+function updateDeskBarrage(room: Room, player: Player) {
   const level = player.inventory.deskParts;
   if (level <= 0) return;
-  const cooldown = Math.max(0.24, 1.16 - level * 0.1 - powerLevel * 0.045);
+  const cooldown = Math.max(0.54, 1.55 - level * 0.08);
   if (!canEquipmentAct(room, player.id, 'desk', cooldown)) return;
-  const targets = nearestZombies(room, player.position, 1 + Math.floor(level / 4), 620 + level * 35);
-  const damage = 13 + level * 3 + powerLevel * 2 + comboDamageBonus(player);
+  const range = playerAttackRange(room, player) + 80;
+  const targets = nearestAutoAttackTargets(room, player, 1 + Math.floor(level / 5), range);
+  const damage = 9 + level * 2.2 + comboDamageBonus(player);
   for (const target of targets) {
     const dir = normalize({ x: target.position.x - player.position.x, y: target.position.y - player.position.y });
     room.projectiles.push({
       id: makeId('deskShot'),
       ownerId: player.id,
       position: { ...player.position },
-      velocity: { x: dir.x * (720 + powerLevel * 24), y: dir.y * (720 + powerLevel * 24) },
-      ttl: 0.9 + Math.min(level, 8) * 0.03
+      velocity: { x: dir.x * PROJECTILE_SPEED, y: dir.y * PROJECTILE_SPEED },
+      ttl: range / PROJECTILE_SPEED
     });
-    damageZombie(room, target, damage * 0.18, player.id);
+    damageAutoAttackTarget(room, target, damage * 0.18, player);
   }
 }
 
-function updateChairShield(room: Room, player: Player, powerLevel: number, elapsed: number) {
+function updateChairShield(room: Room, player: Player, elapsed: number) {
   const level = player.inventory.chairParts;
   if (level <= 0) return;
-  const cooldown = Math.max(0.22, 0.58 - level * 0.025 - powerLevel * 0.015);
+  const cooldown = Math.max(0.36, 0.86 - level * 0.025);
   if (!canEquipmentAct(room, player.id, 'chair', cooldown)) return;
-  const radius = 58 + level * 7;
-  const damage = 7 + level * 2.2 + powerLevel * 0.8;
-  for (const zombie of nearestZombies(room, player.position, 10 + Math.floor(level / 2), radius)) {
-    damageZombie(room, zombie, damage, player.id);
+  const radius = 42 + level * 5;
+  const damage = 5 + level * 1.5;
+  for (const target of nearestAutoAttackTargets(room, player, 10 + Math.floor(level / 2), radius)) {
+    damageAutoAttackTarget(room, target, damage, player);
   }
   if (level >= 3) {
     const orbit = {
       x: player.position.x + Math.cos(elapsed * 4.2) * Math.min(radius, 92),
       y: player.position.y + Math.sin(elapsed * 4.2) * Math.min(radius, 92)
     };
-    pushFeedback(room, 'hit', orbit, '의자', 0.18);
+    pushFeedback(room, 'hit', orbit, '?섏옄', 0.18);
   }
 }
 
-function updatePanelGuard(room: Room, player: Player, powerLevel: number) {
+function updatePanelGuard(room: Room, player: Player) {
   const level = player.inventory.partitionMaterial;
   if (level <= 0) return;
-  const cooldown = Math.max(0.32, 0.78 - level * 0.035);
+  const cooldown = Math.max(0.5, 1.05 - level * 0.035);
   if (!canEquipmentAct(room, player.id, 'panel', cooldown)) return;
-  const radius = 92 + level * 8;
-  const damage = 5 + level * 1.6 + powerLevel * 0.7;
-  for (const zombie of nearestZombies(room, player.position, 14 + Math.floor(level / 2), radius)) {
-    damageZombie(room, zombie, damage, player.id);
+  const radius = 70 + level * 6;
+  const damage = 3.5 + level * 1.15;
+  for (const target of nearestAutoAttackTargets(room, player, 14 + Math.floor(level / 2), radius)) {
+    damageAutoAttackTarget(room, target, damage, player);
   }
 }
 
@@ -466,11 +540,37 @@ function canEquipmentAct(room: Room, playerId: string, action: string, cooldown:
   return true;
 }
 
-function nearestZombies(room: Room, point: Vec2, count: number, maxDistance: number) {
-  return [...room.zombies]
-    .filter((zombie) => distance(point, zombie.position) <= maxDistance)
-    .sort((a, b) => distance(point, a.position) - distance(point, b.position))
+type AutoAttackTarget =
+  | { kind: 'zombie'; position: Vec2; distance: number; zombie: Zombie }
+  | { kind: 'player'; position: Vec2; distance: number; player: Player };
+
+function nearestAutoAttackTargets(room: Room, player: Player, count: number, maxDistance: number): AutoAttackTarget[] {
+  const zombieTargets: AutoAttackTarget[] = room.zombies.map((zombie) => ({
+    kind: 'zombie',
+    position: zombie.position,
+    distance: distance(player.position, zombie.position),
+    zombie
+  }));
+  const playerTargets: AutoAttackTarget[] = room.settings.pvpEnabled
+    ? [...room.players.values()]
+        .filter((target) => target.id !== player.id && target.alive)
+        .map((target) => ({
+          kind: 'player',
+          position: target.position,
+          distance: distance(player.position, target.position),
+          player: target
+        }))
+    : [];
+
+  return [...zombieTargets, ...playerTargets]
+    .filter((target) => target.distance <= maxDistance)
+    .sort((a, b) => a.distance - b.distance)
     .slice(0, count);
+}
+
+function damageAutoAttackTarget(room: Room, target: AutoAttackTarget, damage: number, attacker: Player) {
+  if (target.kind === 'zombie') damageZombie(room, target.zombie, damage, attacker.id);
+  else damagePlayer(room, target.player, damage, attacker);
 }
 
 function updateProjectiles(room: Room) {
@@ -517,7 +617,7 @@ function updateZombies(room: Room) {
     };
     const dir = normalize({ x: targetPoint.x - zombie.position.x, y: targetPoint.y - zombie.position.y });
     const chaseBoost = distance(zombie.position, target.position) > 360 ? 1.2 : 1;
-    zombie.position = moveZombieAroundWalls(room, zombie, dir, targetPoint, zombieSpeed(zombie.type, room.wave) * chaseBoost);
+    zombie.position = moveZombieWithPatterns(room, zombie, dir, targetPoint, zombieSpeed(zombie.type, room.wave) * chaseBoost);
 
     for (const facility of room.facilities) {
       if (distance(zombie.position, facility.position) < ZOMBIE_RADIUS + FACILITY_RADIUS) {
@@ -530,7 +630,11 @@ function updateZombies(room: Room) {
     }
   }
   room.facilities = room.facilities.filter((facility) => facility.hp > 0);
-  room.zombies = room.zombies.filter((zombie) => zombie.hp > 0);
+  room.zombies = room.zombies.filter((zombie) => {
+    if (zombie.hp > 0) return true;
+    zombieAiTimers.delete(zombieAiKey(room, zombie));
+    return false;
+  });
 }
 
 function damageZombie(room: Room, zombie: Zombie, damage: number, attackerId: string) {
@@ -544,20 +648,21 @@ function damageZombie(room: Room, zombie: Zombie, damage: number, attackerId: st
   const combo = registerKillCombo(room, attacker);
   const score = zombieScore(zombie.type) + Math.min(combo - 1, 7) * 3;
   attacker.score += score;
-  if (combo >= 3) attacker.hp = Math.min(100, attacker.hp + 2);
   pushFeedback(room, 'kill', zombie.position, combo >= 2 ? `x${combo} +${score}` : `+${score}`);
 }
 
 function damagePlayer(room: Room, target: Player, damage: number, attacker?: Player) {
   if (!target.alive) return;
   const guardLevel = target.inventory.partitionMaterial;
-  const reduction = Math.min(0.38, guardLevel * 0.038 + target.inventory.powerModule * 0.008);
-  target.hp -= damage * (1 - reduction);
+  const reduction = Math.min(0.26, guardLevel * 0.032);
+  const effectiveDamage = damage * (1 - reduction);
+  target.hp -= effectiveDamage;
+  pushFeedback(room, 'hit', target.position, `-${Math.max(1, Math.round(effectiveDamage))}`, 0.12);
   if (target.hp > 0) return;
   target.hp = 0;
   target.alive = false;
   if (attacker && attacker.id !== target.id) attacker.score += 40;
-  pushFeedback(room, 'playerDown', target.position, '쓰러짐');
+  pushFeedback(room, 'playerDown', target.position, 'DOWN');
 }
 
 function spawnWorld(room: Room, elapsed: number) {
@@ -574,9 +679,9 @@ function spawnWorld(room: Room, elapsed: number) {
     }
     room.nextZombieSpawnAt = Math.max(1.0, 3.8 - room.wave * 0.18);
   }
-  if (room.nextResourceSpawnAt <= 0 && room.resources.length < 30) {
+  if (room.nextResourceSpawnAt <= 0 && room.resources.length < 24) {
     room.resources.push(createResource());
-    room.nextResourceSpawnAt = 2.4 + Math.random() * 3.6;
+    room.nextResourceSpawnAt = 3.8 + Math.random() * 4.8;
   }
   room.lastWaveAt = elapsed;
 }
@@ -634,7 +739,20 @@ function createZombie(wave: number, forcedType?: ZombieType): Zombie {
 }
 
 function createResource(): ResourceNode {
-  const types: ResourceType[] = ['chairParts', 'deskParts', 'partitionMaterial', 'powerModule', 'medKit'];
+  const types: ResourceType[] = [
+    'chairParts',
+    'chairParts',
+    'chairParts',
+    'deskParts',
+    'deskParts',
+    'deskParts',
+    'partitionMaterial',
+    'partitionMaterial',
+    'partitionMaterial',
+    'powerModule',
+    'powerModule',
+    'medKit'
+  ];
   return {
     id: makeId('resource'),
     type: types[Math.floor(Math.random() * types.length)],
@@ -670,8 +788,8 @@ function chooseZombieTarget(room: Room, zombie: Zombie) {
   if (zombie.type === 'tanker') {
     return alive
       .sort((a, b) => {
-        const aThreat = a.inventory.deskParts + a.inventory.chairParts + a.inventory.powerModule;
-        const bThreat = b.inventory.deskParts + b.inventory.chairParts + b.inventory.powerModule;
+        const aThreat = a.inventory.deskParts + a.inventory.chairParts + a.inventory.partitionMaterial;
+        const bThreat = b.inventory.deskParts + b.inventory.chairParts + b.inventory.partitionMaterial;
         return distance(zombie.position, a.position) - aThreat * 18 - (distance(zombie.position, b.position) - bThreat * 18);
       })[0];
   }
@@ -687,8 +805,8 @@ function hasPowerBuff(room: Room, player: Player) {
 }
 
 function rangedDamage(room: Room, player: Player) {
-  const powerDamage = player.inventory.powerModule * 2.2;
-  return 15 + powerDamage + comboDamageBonus(player);
+  const base = 11 + player.inventory.deskParts * 0.8 + comboDamageBonus(player);
+  return isInPowerZone(room, player.position) ? base * (1 + POWER_ZONE_DAMAGE_BONUS) : base;
 }
 
 function comboDamageBonus(player: Player) {
@@ -724,6 +842,13 @@ function clearFeedbackTimers(room: Room, playerId?: string) {
   const prefix = `${room.id}:feedback:`;
   for (const key of feedbackTimers.keys()) {
     if (key.startsWith(prefix) || (playerId && key.includes(`:${playerId}:`))) feedbackTimers.delete(key);
+  }
+}
+
+function clearZombieAiTimers(room: Room) {
+  const prefix = `${room.id}:`;
+  for (const key of zombieAiTimers.keys()) {
+    if (key.startsWith(prefix)) zombieAiTimers.delete(key);
   }
 }
 
@@ -798,6 +923,75 @@ function moveZombieAroundWalls(room: Room, zombie: Zombie, desired: Vec2, target
   return zombie.position;
 }
 
+function moveZombieWithPatterns(room: Room, zombie: Zombie, desired: Vec2, targetPoint: Vec2, speed: number) {
+  const state = getZombieAiState(room, zombie);
+  const now = Date.now() / 1000;
+  const targetDistance = distance(zombie.position, targetPoint);
+
+  if (now >= state.nextSpecialAt) {
+    if (zombie.type === 'runner' && targetDistance > 120 && targetDistance < 520) {
+      state.dashUntil = now + 0.34;
+      state.dashDirection = desired;
+      state.nextSpecialAt = now + 2.8 + Math.random() * 2.2;
+      pushFeedback(room, 'hit', zombie.position, '?뚯쭊', 0.18);
+    } else if (zombie.type === 'normal' && now >= state.leapCooldownUntil && targetDistance < 460) {
+      const leaped = tryLeapWall(room, zombie, desired);
+      state.leapCooldownUntil = now + 5.5 + Math.random() * 2.5;
+      state.nextSpecialAt = now + 3.2 + Math.random() * 2.4;
+      if (leaped) return zombie.position;
+    } else {
+      state.nextSpecialAt = now + 2.6 + Math.random() * 2.8;
+    }
+  }
+
+  if (now < state.dashUntil) {
+    const dashPoint = clampToMap({
+      x: zombie.position.x + state.dashDirection.x * speed * 2.5 * DT,
+      y: zombie.position.y + state.dashDirection.y * speed * 2.5 * DT
+    }, ZOMBIE_RADIUS);
+    if (!collidesWithWalls(dashPoint, ZOMBIE_RADIUS, room.walls)) return dashPoint;
+    state.dashUntil = 0;
+  }
+
+  return moveZombieAroundWalls(room, zombie, desired, targetPoint, speed);
+}
+
+function getZombieAiState(room: Room, zombie: Zombie) {
+  const key = zombieAiKey(room, zombie);
+  let state = zombieAiTimers.get(key);
+  if (!state) {
+    const now = Date.now() / 1000;
+    state = {
+      nextSpecialAt: now + 1.2 + Math.random() * 3.2,
+      dashUntil: 0,
+      dashDirection: { x: 0, y: 0 },
+      leapCooldownUntil: 0
+    };
+    zombieAiTimers.set(key, state);
+  }
+  return state;
+}
+
+function zombieAiKey(room: Room, zombie: Zombie) {
+  return `${room.id}:${zombie.id}`;
+}
+
+function tryLeapWall(room: Room, zombie: Zombie, desired: Vec2) {
+  const nearWall = room.walls
+    .filter((wall) => !isOuterWall(wall))
+    .some((wall) => circleRect(zombie.position, ZOMBIE_RADIUS + 24, wall));
+  if (!nearWall) return false;
+
+  const landing = clampToMap({
+    x: zombie.position.x + desired.x * 76,
+    y: zombie.position.y + desired.y * 76
+  }, ZOMBIE_RADIUS);
+  if (collidesWithWalls(landing, ZOMBIE_RADIUS, room.walls) || collidesWithFacilities(room, landing, ZOMBIE_RADIUS)) return false;
+  zombie.position = landing;
+  pushFeedback(room, 'hit', landing, '?꾩빟', 0.18);
+  return true;
+}
+
 function rotate(vector: Vec2, angle: number): Vec2 {
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
@@ -832,7 +1026,7 @@ function damageBlockingWall(room: Room, zombie: Zombie, targetPoint: Vec2) {
   if (nextHp > 0) return;
   room.walls = room.walls.filter((candidate) => wallKey(candidate) !== key);
   room.wallHp.delete(key);
-  pushFeedback(room, 'hit', rectCenter(wall), '파괴', 0.15);
+  pushFeedback(room, 'hit', rectCenter(wall), '?뚭눼', 0.15);
 }
 
 function wallHp(wall: Wall) {
@@ -867,18 +1061,30 @@ function circleRect(point: Vec2, radius: number, rect: Wall) {
   return distance(point, { x: closestX, y: closestY }) < radius;
 }
 
+app.get('/api/rooms', (_req, res) => {
+  res.json(roomSummaries());
+});
+
 io.on('connection', (socket) => {
+  socket.emit('roomList', roomSummaries());
+
+  socket.on('requestRoomList', (reply) => {
+    const summaries = roomSummaries();
+    if (reply) reply(summaries);
+    else socket.emit('roomList', summaries);
+  });
+
   socket.on('joinRoom', (payload) => {
     const roomId = payload.roomId?.trim().toUpperCase() || makeRoomId();
     const existing = rooms.get(roomId);
     const room = existing ?? createRoom(roomId, payload.settings);
     if (!existing) rooms.set(roomId, room);
     if (room.phase !== 'lobby' && room.phase !== 'ended') {
-      socket.emit('errorMessage', '진행 중인 방에는 입장할 수 없습니다.');
+      socket.emit('errorMessage', '吏꾪뻾 以묒씤 諛⑹뿉???낆옣?????놁뒿?덈떎.');
       return;
     }
     if (room.players.size >= room.settings.maxPlayers) {
-      socket.emit('errorMessage', '방 정원이 가득 찼습니다.');
+      socket.emit('errorMessage', '諛??뺤썝??媛??李쇱뒿?덈떎.');
       return;
     }
 
@@ -888,6 +1094,7 @@ io.on('connection', (socket) => {
     room.players.set(socket.id, player);
     socket.emit('joined', { roomId: room.id, playerId: socket.id });
     broadcast(room);
+    broadcastRoomList();
   });
 
   socket.on('setReady', (ready) => {
@@ -898,6 +1105,7 @@ io.on('connection', (socket) => {
     const players = [...room.players.values()];
     if (players.length > 0 && players.every((candidate) => candidate.ready)) startCountdown(room);
     broadcast(room);
+    broadcastRoomList();
   });
 
   socket.on('updateSettings', (settings) => {
@@ -907,6 +1115,7 @@ io.on('connection', (socket) => {
     room.settings = sanitizeSettings(settings);
     room.remainingSec = room.settings.gameDurationSec;
     broadcast(room);
+    broadcastRoomList();
   });
 
   socket.on('input', (input) => {
@@ -936,10 +1145,13 @@ function leave(socketId: string) {
   const nextHost = room.players.values().next().value as Player | undefined;
   if (nextHost) nextHost.host = true;
   if (room.players.size === 0) {
+    clearZombieAiTimers(room);
     rooms.delete(room.id);
+    broadcastRoomList();
     return;
   }
   broadcast(room);
+  broadcastRoomList();
 }
 
 let loopFrame = 0;
