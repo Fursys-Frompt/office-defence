@@ -500,6 +500,20 @@ canvas {
   background: linear-gradient(90deg, #c63f3f, #f2a35d);
 }
 
+.player-hud.spectating {
+  border-color: rgba(77, 91, 104, 0.42);
+  background: rgba(236, 241, 244, 0.9);
+}
+
+.player-hud.spectating .hp-meter span {
+  background: linear-gradient(90deg, #7d8994, #bac4cc);
+}
+
+.player-hud.spectating .player-summary span {
+  color: #4d5b68;
+  font-weight: 900;
+}
+
 .mission-hud b {
   font-size: 18px;
 }
@@ -826,6 +840,48 @@ canvas {
   display: none;
 }
 
+.touch-control-hud {
+  display: none;
+}
+
+.touch-control-menu {
+  display: none;
+}
+
+.touch-control-toggle {
+  width: 40px;
+  height: 40px;
+  justify-content: center;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.touch-control-options {
+  display: flex;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(23, 59, 63, 0.1);
+}
+
+.touch-control-options button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: transparent;
+  color: rgba(23, 33, 29, 0.76);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.touch-control-options button.active {
+  background: #173b3f;
+  color: #f7fbfa;
+}
+
 @media (max-width: 720px) {
   .shell {
     padding: 12px;
@@ -896,8 +952,20 @@ canvas {
 
   .usable-item-hud {
     right: 12px;
+    left: auto;
     bottom: 116px;
     flex-direction: column;
+  }
+
+  .game.joystick-right .usable-item-hud {
+    left: 12px;
+    right: auto;
+  }
+
+  .game.joystick-right .inventory-hud {
+    left: auto;
+    right: 8px;
+    justify-content: flex-end;
   }
 
   .usable-item-button {
@@ -954,6 +1022,10 @@ canvas {
     pointer-events: none;
   }
 
+  .game.joystick-right .touch-affordance {
+    inset: auto 18px 180px auto;
+  }
+
   .touch-affordance span {
     width: 82px;
     height: 82px;
@@ -961,5 +1033,27 @@ canvas {
     border: 1px solid rgba(247, 251, 250, 0.42);
     background: rgba(23, 59, 63, 0.08);
     box-shadow: inset 0 0 0 12px rgba(247, 251, 250, 0.08);
+  }
+
+  .touch-control-menu {
+    position: absolute;
+    top: 86px;
+    left: 50%;
+    z-index: 2;
+    display: flex;
+    justify-content: center;
+    transform: translateX(-50%);
+  }
+
+  .touch-control-toggle {
+    position: static;
+  }
+
+  .touch-control-hud {
+    position: absolute;
+    top: 46px;
+    left: 50%;
+    display: flex;
+    transform: translateX(-50%);
   }
 }

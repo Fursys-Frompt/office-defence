@@ -21,18 +21,18 @@ export const EQUIPMENT_LABELS: Record<ResourceType, string> = {
 };
 
 export const EQUIPMENT_DESCRIPTIONS: Record<ResourceType, string> = {
-  chairParts: '짧은 범위 방어',
-  deskParts: '공격 사거리 증가',
-  partitionMaterial: '받는 피해 감소',
-  powerModule: '사용 시 강화 구역',
-  medKit: '사용 시 체력 회복'
+  chairParts: '주변 적을 밀어내고 피해를 줍니다.',
+  deskParts: '공격 사거리와 자동 공격 빈도를 높입니다.',
+  partitionMaterial: '받는 피해를 줄이고 주변 적을 견제합니다.',
+  powerModule: '사용 시 일정 시간 공격 강화 구역을 생성합니다.',
+  medKit: '사용 시 체력을 회복합니다.'
 };
 
 export const FACILITY_LABELS: Record<FacilityType, string> = {
-  partitionBarricade: '파티션',
-  deskBarricade: '책상',
-  medStation: '구급소',
-  powerAmplifier: '증폭기'
+  partitionBarricade: '파티션 바리케이드',
+  deskBarricade: '책상 바리케이드',
+  medStation: '구급 거점',
+  powerAmplifier: '전력 증폭기'
 };
 
 export const FACILITY_COSTS: Record<FacilityType, Partial<ResourceInventory>> = {

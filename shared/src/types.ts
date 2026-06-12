@@ -99,6 +99,7 @@ export type FeedbackEvent = {
 
 export type GameSnapshot = {
   roomId: string;
+  roomTitle: string;
   phase: GamePhase;
   settings: RoomSettings;
   players: Player[];
@@ -121,6 +122,7 @@ export type GameSnapshot = {
 
 export type JoinRoomPayload = {
   roomId?: string;
+  roomTitle?: string;
   nickname: string;
   avatarId?: number;
   settings?: RoomSettings;
@@ -128,6 +130,7 @@ export type JoinRoomPayload = {
 
 export type RoomSummary = {
   roomId: string;
+  roomTitle: string;
   phase: GamePhase;
   playerCount: number;
   maxPlayers: number;

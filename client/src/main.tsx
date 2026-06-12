@@ -26,8 +26,10 @@ type VisualEffect = Omit<FeedbackEvent, 'type'> & {
   startedAt: number;
 };
 type AudioCue = FeedbackEvent['type'] | 'shoot' | 'melee';
+type TouchControlSide = 'left' | 'right';
 
 const socket: GameSocket = io();
+const TOUCH_CONTROL_SIDE_KEY = 'zombie-office-survival.touchControlSide';
 const SPRITES = {
   player: { row: 0, size: 74, shadow: 30, frameMs: 130 },
   normal: { row: 1, size: 74, shadow: 32, frameMs: 150 },
@@ -98,6 +100,7 @@ type PendingRoomAction = {
 
 function LobbyApp() {
   const [nickname, setNickname] = useState('');
+  const [roomTitle, setRoomTitle] = useState('');
   const [roomInput, setRoomInput] = useState('');
   const [roomId, setRoomId] = useState('');
   const [playerId, setPlayerId] = useState('');
@@ -159,6 +162,7 @@ function LobbyApp() {
     socket.emit('joinRoom', {
       nickname: nickname.trim() || '생존자',
       roomId: pendingAction.mode === 'join' ? pendingAction.roomId : undefined,
+      roomTitle: pendingAction.mode === 'create' ? roomTitle : undefined,
       avatarId
     });
   };
@@ -219,8 +223,8 @@ function LobbyApp() {
                     onClick={() => openJoinModal(room.roomId)}
                   >
                     <span>
-                      <strong>{room.roomId}</strong>
-                      <em>방장 {room.hostNickname}</em>
+                      <strong>{room.roomTitle}</strong>
+                      <em>코드 {room.roomId} · 방장 {room.hostNickname}</em>
                     </span>
                     <span>{room.playerCount}/{room.maxPlayers}</span>
                     <span>{Math.round(room.gameDurationSec / 60)}분</span>
@@ -239,8 +243,10 @@ function LobbyApp() {
           <ProfileModal
             action={pendingAction}
             nickname={nickname}
+            roomTitle={roomTitle}
             avatarId={avatarId}
             onNicknameChange={setNickname}
+            onRoomTitleChange={setRoomTitle}
             onAvatarChange={setAvatarId}
             onCancel={() => setPendingAction(null)}
             onConfirm={confirmRoomAction}
@@ -257,8 +263,9 @@ function LobbyApp() {
           <div className="room-header">
             <div>
               <p className="eyebrow">Mission Room</p>
-              <h1>{roomId}</h1>
+              <h1>{snapshot.roomTitle}</h1>
               <div className="room-meta">
+                <span>코드 {roomId}</span>
                 <span>참가 {snapshot.players.length}/{snapshot.settings.maxPlayers}</span>
                 <span>준비 {readyCount}/{snapshot.players.length}</span>
                 <span>{Math.round(snapshot.settings.gameDurationSec / 60)}분</span>
@@ -378,16 +385,20 @@ function GameGuideModal({ onClose }: { onClose: () => void }) {
 function ProfileModal({
   action,
   nickname,
+  roomTitle,
   avatarId,
   onNicknameChange,
+  onRoomTitleChange,
   onAvatarChange,
   onCancel,
   onConfirm
 }: {
   action: PendingRoomAction;
   nickname: string;
+  roomTitle: string;
   avatarId: number;
   onNicknameChange: (value: string) => void;
+  onRoomTitleChange: (value: string) => void;
   onAvatarChange: (value: number) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -402,6 +413,12 @@ function ProfileModal({
           </div>
           <button type="button" onClick={onCancel}>닫기</button>
         </div>
+        {action.mode === 'create' && (
+          <label>
+            방 제목
+            <input value={roomTitle} maxLength={24} onChange={(event) => onRoomTitleChange(event.target.value)} placeholder="생존 방" />
+          </label>
+        )}
         <label>
           닉네임
           <input value={nickname} maxLength={16} onChange={(event) => onNicknameChange(event.target.value)} placeholder="생존자" />
@@ -450,6 +467,8 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const pressed = useRef(new Set<string>());
   const pointer = useRef<Vec2>({ x: 1, y: 0 });
   const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
+  const [touchControlSide, setTouchControlSide] = useState<TouchControlSide>(() => readTouchControlSide());
+  const [touchControlOpen, setTouchControlOpen] = useState(false);
   const queuedItem = useRef<ResourceType | undefined>(undefined);
   const seenFeedback = useRef(new Set<string>());
   const visualEffects = useRef<VisualEffect[]>([]);
@@ -465,14 +484,15 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     const current = latestInputState.current;
     const currentMe = current.me;
     const move = keyboardMove(pressed.current, joystick.current?.value);
-    const autoAim = currentMe ? getAutoAim(current.snapshot, currentMe) : undefined;
+    const canFight = Boolean(currentMe?.alive);
+    const autoAim = canFight && currentMe ? getAutoAim(current.snapshot, currentMe) : undefined;
     const aim = autoAim ? autoAim.direction : pointer.current;
-    const useItem = queuedItem.current;
+    const useItem = canFight ? queuedItem.current : undefined;
     queuedItem.current = undefined;
     const input: PlayerInput = {
       move,
       aim,
-      shooting: Boolean(autoAim && currentMe && autoAim.distance <= playerAttackRange(current.snapshot, currentMe)),
+      shooting: Boolean(canFight && autoAim && currentMe && autoAim.distance <= playerAttackRange(current.snapshot, currentMe)),
       melee: false,
       useItem
     };
@@ -505,6 +525,11 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     }, INPUT_SEND_MS);
     return () => window.clearInterval(id);
   }, [sendInput]);
+
+  useEffect(() => {
+    writeTouchControlSide(touchControlSide);
+    joystick.current = null;
+  }, [touchControlSide]);
 
   useEffect(() => {
     if (me) latestRender.current = { snapshot, me };
@@ -572,9 +597,10 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const hpPercent = Math.max(0, Math.min(100, (hp / maxHp) * 100));
   const combo = me?.combo ?? 0;
   const threat = getThreatLabel(snapshot.wave);
+  const isSpectating = Boolean(me && !me.alive);
 
   return (
-    <main className="game">
+    <main className={`game joystick-${touchControlSide}`}>
       <canvas
         ref={canvasRef}
         onMouseMove={(event) => {
@@ -589,28 +615,28 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           audio.current.unlock();
         }}
         onTouchStart={(event) => {
-          handleTouch(event, joystick);
+          handleTouch(event, joystick, touchControlSide);
           sendInput();
         }}
         onTouchMove={(event) => {
-          handleTouch(event, joystick);
+          handleTouch(event, joystick, touchControlSide);
           sendInput();
         }}
         onTouchEnd={(event) => {
-          handleTouch(event, joystick);
+          handleTouch(event, joystick, touchControlSide);
           sendInput();
         }}
       />
-      <div className={hpPercent <= 30 ? 'damage-vignette visible' : 'damage-vignette'} />
-      <section className={`hud player-hud top-left ${hpPercent <= 30 ? 'danger' : ''}`}>
+      <div className={!isSpectating && hpPercent <= 30 ? 'damage-vignette visible' : 'damage-vignette'} />
+      <section className={`hud player-hud top-left ${hpPercent <= 30 && !isSpectating ? 'danger' : ''} ${isSpectating ? 'spectating' : ''}`}>
         <div className="player-summary">
           <strong>{me?.nickname}</strong>
-          <span>{me?.score ?? 0}점</span>
+          <span>{isSpectating ? '관전 중' : `${me?.score ?? 0}점`}</span>
         </div>
         <div className="hp-meter" aria-label={`체력 ${hp}/${maxHp}`}>
           <span style={{ width: `${hpPercent}%` }} />
         </div>
-        <b>체력 {hp}/{maxHp}</b>
+        <b>{isSpectating ? '이동 관전 가능' : `체력 ${hp}/${maxHp}`}</b>
       </section>
       <section className="hud inventory-hud">
         {passiveItemKeys.map((resource) => (
@@ -637,8 +663,9 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
               key={resource}
               type="button"
               className={`usable-item-button ${count > 0 ? 'ready' : 'empty'}`}
-              disabled={count <= 0}
+              disabled={count <= 0 || isSpectating}
               onClick={() => {
+                if (isSpectating) return;
                 queuedItem.current = resource;
                 sendInput();
               }}
@@ -668,6 +695,38 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           <span>연속 처치</span>
         </section>
       )}
+      <div className="touch-control-menu">
+        <button
+          type="button"
+          className="hud touch-control-toggle"
+          aria-label="조이스틱 설정"
+          aria-expanded={touchControlOpen}
+          onClick={() => setTouchControlOpen((open) => !open)}
+        >
+          ⚙
+        </button>
+        {touchControlOpen && (
+          <section className="hud touch-control-hud" aria-label="조이스틱 위치">
+            <span>조이스틱</span>
+            <div className="touch-control-options">
+              {(['left', 'right'] as const).map((side) => (
+                <button
+                  key={side}
+                  type="button"
+                  className={touchControlSide === side ? 'active' : ''}
+                  aria-pressed={touchControlSide === side}
+                  onClick={() => {
+                    setTouchControlSide(side);
+                    setTouchControlOpen(false);
+                  }}
+                >
+                  {side === 'left' ? '왼쪽' : '오른쪽'}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
       <section className="hud ranking-mini">
         {hud.map((player, index) => (
           <span key={player.id}>{index + 1}. {player.nickname} {player.score}</span>
@@ -694,6 +753,23 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   );
 }
 
+function readTouchControlSide(): TouchControlSide {
+  if (typeof window === 'undefined') return 'left';
+  try {
+    return window.localStorage.getItem(TOUCH_CONTROL_SIDE_KEY) === 'right' ? 'right' : 'left';
+  } catch {
+    return 'left';
+  }
+}
+
+function writeTouchControlSide(side: TouchControlSide) {
+  try {
+    window.localStorage.setItem(TOUCH_CONTROL_SIDE_KEY, side);
+  } catch {
+    // The setting still works for the current session when persistent storage is unavailable.
+  }
+}
+
 function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
   if (joystickMove && Math.hypot(joystickMove.x, joystickMove.y) > 0.025) return joystickMove;
   return {
@@ -717,22 +793,26 @@ function spriteBackgroundPosition(col: number, row: number, columns: number, row
 
 function handleTouch(
   event: React.TouchEvent<HTMLCanvasElement>,
-  joystick: React.MutableRefObject<{ id: number; origin: Vec2; value: Vec2 } | null>
+  joystick: React.MutableRefObject<{ id: number; origin: Vec2; value: Vec2 } | null>,
+  side: TouchControlSide
 ) {
   createAudioEngine().unlock();
   event.preventDefault();
   const rect = event.currentTarget.getBoundingClientRect();
   const touches = Array.from(event.touches);
-  const left = touches.find((touch) => touch.clientX - rect.left < rect.width * 0.7);
-  if (!left) {
+  const joystickTouch = touches.find((touch) => {
+    const x = touch.clientX - rect.left;
+    return side === 'left' ? x < rect.width * 0.7 : x > rect.width * 0.3;
+  });
+  if (!joystickTouch) {
     joystick.current = null;
     return;
   }
-  if (!joystick.current || joystick.current.id !== left.identifier) {
-    joystick.current = { id: left.identifier, origin: { x: left.clientX, y: left.clientY }, value: { x: 0, y: 0 } };
+  if (!joystick.current || joystick.current.id !== joystickTouch.identifier) {
+    joystick.current = { id: joystickTouch.identifier, origin: { x: joystickTouch.clientX, y: joystickTouch.clientY }, value: { x: 0, y: 0 } };
   }
-  const dx = left.clientX - joystick.current.origin.x;
-  const dy = left.clientY - joystick.current.origin.y;
+  const dx = joystickTouch.clientX - joystick.current.origin.x;
+  const dy = joystickTouch.clientY - joystick.current.origin.y;
   const size = Math.max(1, Math.hypot(dx, dy));
   joystick.current.value = {
     x: Math.max(-1, Math.min(1, dx / Math.max(60, size))),

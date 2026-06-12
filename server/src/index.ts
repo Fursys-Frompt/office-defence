@@ -27,6 +27,7 @@ import { FACILITY_COSTS, FACILITY_HP, ZOMBIE_SCORE } from '../../shared/src/game
 
 type Room = {
   id: string;
+  title: string;
   phase: GamePhase;
   settings: RoomSettings;
   players: Map<string, Player>;
@@ -45,8 +46,19 @@ type Room = {
   lastWaveAt: number;
   nextZombieSpawnAt: number;
   nextResourceSpawnAt: number;
+  recentDamage: Map<string, { amount: number; lastAt: number }>;
+  nextReliefSupplyAt: number;
   walls: Wall[];
   wallHp: Map<string, number>;
+};
+
+type DirectorState = {
+  aliveCount: number;
+  playerScale: number;
+  relief: number;
+  earlyEase: number;
+  lowestHpRatio: number;
+  recentDamage: number;
 };
 
 const app = express();
@@ -77,6 +89,7 @@ const DEFAULT_SETTINGS: RoomSettings = {
   gameDurationSec: 180,
   pvpEnabled: false
 };
+const DEFAULT_ROOM_TITLE = '생존 방';
 
 const rooms = new Map<string, Room>();
 const socketRooms = new Map<string, string>();
@@ -104,9 +117,10 @@ const walls: Wall[] = [
   { x: 1100, y: 120, width: 300, height: 22 }
 ];
 
-function createRoom(id: string, settings?: Partial<RoomSettings>): Room {
+function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string): Room {
   return {
     id,
+    title: sanitizeRoomTitle(title),
     phase: 'lobby',
     settings: sanitizeSettings({ ...DEFAULT_SETTINGS, ...settings }),
     players: new Map(),
@@ -125,6 +139,8 @@ function createRoom(id: string, settings?: Partial<RoomSettings>): Room {
     lastWaveAt: 0,
     nextZombieSpawnAt: 0,
     nextResourceSpawnAt: 0,
+    recentDamage: new Map(),
+    nextReliefSupplyAt: 0,
     walls: walls.map((wall) => ({ ...wall })),
     wallHp: new Map()
   };
@@ -136,6 +152,11 @@ function sanitizeSettings(settings: RoomSettings): RoomSettings {
     gameDurationSec: clamp(Math.round(settings.gameDurationSec), 60, 600),
     pvpEnabled: Boolean(settings.pvpEnabled)
   };
+}
+
+function sanitizeRoomTitle(title?: string) {
+  const sanitized = title?.trim().replace(/\s+/g, ' ').slice(0, 24);
+  return sanitized || DEFAULT_ROOM_TITLE;
 }
 
 function makeRoomId() {
@@ -196,6 +217,7 @@ function randomFreePosition(): Vec2 {
 function snapshot(room: Room): GameSnapshot {
   return {
     roomId: room.id,
+    roomTitle: room.title,
     phase: room.phase,
     settings: room.settings,
     players: [...room.players.values()],
@@ -226,6 +248,7 @@ function roomSummaries(): RoomSummary[] {
       const host = players.find((player) => player.host) ?? players[0];
       return {
         roomId: room.id,
+        roomTitle: room.title,
         phase: room.phase,
         playerCount: players.length,
         maxPlayers: room.settings.maxPlayers,
@@ -256,6 +279,8 @@ function startGame(room: Room) {
   room.lastWaveAt = 0;
   room.nextZombieSpawnAt = 2.2;
   room.nextResourceSpawnAt = 0;
+  room.recentDamage = new Map();
+  room.nextReliefSupplyAt = 18;
   clearZombieAiTimers(room);
   room.zombies = [];
   room.projectiles = [];
@@ -265,7 +290,7 @@ function startGame(room: Room) {
   room.feedbackEvents = [];
   room.walls = walls.map((wall) => ({ ...wall }));
   room.wallHp = new Map();
-  room.resources = Array.from({ length: 14 }, () => createResource());
+  room.resources = Array.from({ length: 14 }, () => createResource(room));
   for (const player of room.players.values()) {
     killTimers.delete(comboKey(room, player.id));
     clearEquipmentTimers(room, player.id);
@@ -324,21 +349,23 @@ function tickRoom(room: Room) {
 
 function updatePlayers(room: Room, elapsed: number) {
   for (const player of room.players.values()) {
-    if (!player.alive) continue;
-    refreshCombo(room, player);
     const input = room.inputs.get(player.id);
     if (!input) continue;
 
     const move = normalize(input.move);
+    const speed = player.alive ? 220 : 255;
     const next = {
-      x: player.position.x + move.x * 220 * DT,
-      y: player.position.y + move.y * 220 * DT
+      x: player.position.x + move.x * speed * DT,
+      y: player.position.y + move.y * speed * DT
     };
     if (!collidesWithWalls(next, PLAYER_RADIUS, room.walls) && !collidesWithFacilities(room, next, PLAYER_RADIUS)) {
       player.position = clampToMap(next, PLAYER_RADIUS);
     }
     const aim = normalize(input.aim);
     if (length(aim) > 0) player.aim = aim;
+
+    if (!player.alive) continue;
+    refreshCombo(room, player);
 
     if (input.useItem) useItem(room, player, input.useItem);
 
@@ -664,6 +691,7 @@ function damagePlayer(room: Room, target: Player, damage: number, attacker?: Pla
   const reduction = Math.min(0.26, guardLevel * 0.032);
   const effectiveDamage = damage * (1 - reduction);
   target.hp -= effectiveDamage;
+  recordRecentDamage(room, target.id, effectiveDamage);
   pushFeedback(room, 'hit', target.position, `-${Math.max(1, Math.round(effectiveDamage))}`, 0.12);
   if (target.hp > 0) return;
   target.hp = 0;
@@ -675,22 +703,70 @@ function damagePlayer(room: Room, target: Player, damage: number, attacker?: Pla
 function spawnWorld(room: Room, elapsed: number) {
   room.nextZombieSpawnAt -= DT;
   room.nextResourceSpawnAt -= DT;
+  room.nextReliefSupplyAt -= DT;
+  const director = getDirectorState(room, elapsed);
   if (room.nextZombieSpawnAt <= 0) {
-    const aliveCount = [...room.players.values()].filter((player) => player.alive).length;
     const pressure = Math.floor(elapsed / 30);
-    const count = Math.min(4 + Math.ceil(room.wave * 1.35) + Math.floor(pressure * 1.5) + Math.max(0, aliveCount - 1) * 2, 26);
-    const cap = 52 + aliveCount * 16 + room.wave * 5;
-    for (let i = 0; i < count && room.zombies.length < cap; i += 1) room.zombies.push(createZombie(room.wave));
-    if (room.wave >= 4 && room.wave % 3 === 0) {
-      for (let i = 0; i < aliveCount * 3 && room.zombies.length < cap; i += 1) room.zombies.push(createZombie(room.wave + 2, 'runner'));
+    const baseCount = 3 + Math.ceil(room.wave * 1.05) + Math.floor(pressure * 1.05) + Math.max(0, director.aliveCount - 1) * 1.55;
+    const easedCount = baseCount * (1 - director.earlyEase * 0.25) * (1 - director.relief * 0.38) * director.playerScale;
+    const count = Math.min(Math.max(2, Math.round(easedCount)), 22);
+    const cap = Math.round((42 + director.aliveCount * 12 + room.wave * 4) * (1 - director.relief * 0.22));
+    for (let i = 0; i < count && room.zombies.length < cap; i += 1) {
+      room.zombies.push(createZombie(room.wave, undefined, director));
     }
-    room.nextZombieSpawnAt = Math.max(1.0, 3.8 - room.wave * 0.18);
+    if (room.wave >= 4 && room.wave % 3 === 0 && director.relief < 0.45 && director.earlyEase <= 0) {
+      const burstCount = Math.max(1, Math.round(director.aliveCount * (2 - director.relief)));
+      for (let i = 0; i < burstCount && room.zombies.length < cap; i += 1) {
+        room.zombies.push(createZombie(room.wave + 1, 'runner', director));
+      }
+    }
+    room.nextZombieSpawnAt = Math.max(1.15, 4.4 - room.wave * 0.13 + director.earlyEase * 0.75 + director.relief * 1.65);
   }
   if (room.nextResourceSpawnAt <= 0 && room.resources.length < 24) {
-    room.resources.push(createResource());
-    room.nextResourceSpawnAt = 3.8 + Math.random() * 4.8;
+    room.resources.push(createResource(room, director));
+    room.nextResourceSpawnAt = 4.2 + Math.random() * 5.0 - director.relief * 1.5;
+  }
+  if (director.relief >= 0.62 && room.nextReliefSupplyAt <= 0 && room.resources.length < 28) {
+    room.resources.push(createResource(room, director, true));
+    room.nextReliefSupplyAt = 14 + Math.random() * 8;
   }
   room.lastWaveAt = elapsed;
+}
+
+function getDirectorState(room: Room, elapsed: number): DirectorState {
+  const alive = [...room.players.values()].filter((player) => player.alive);
+  const aliveCount = Math.max(1, alive.length);
+  const totalPlayers = Math.max(1, room.players.size);
+  const lowestHpRatio = alive.length > 0 ? Math.min(...alive.map((player) => player.hp / player.maxHp)) : 0;
+  const recentDamage = recentDamagePressure(room);
+  const deathPressure = (totalPlayers - alive.length) / totalPlayers;
+  const crowdPressure = clamp(room.zombies.length / (aliveCount * 28), 0, 1);
+  const lowHpPressure = clamp((0.62 - lowestHpRatio) / 0.45, 0, 1);
+  const relief = clamp(lowHpPressure * 0.44 + recentDamage * 0.28 + deathPressure * 0.18 + crowdPressure * 0.1, 0, 0.9);
+  const earlyEase = clamp((45 - elapsed) / 45, 0, 1);
+  const playerScale = totalPlayers === 1 ? 0.88 : totalPlayers === 2 ? 0.94 : 1;
+  return { aliveCount, playerScale, relief, earlyEase, lowestHpRatio, recentDamage };
+}
+
+function recentDamagePressure(room: Room) {
+  const now = Date.now() / 1000;
+  let total = 0;
+  for (const [playerId, entry] of room.recentDamage) {
+    if (now - entry.lastAt > 12) {
+      room.recentDamage.delete(playerId);
+      continue;
+    }
+    const fade = 1 - (now - entry.lastAt) / 12;
+    total += entry.amount * fade;
+  }
+  return clamp(total / 150, 0, 1);
+}
+
+function recordRecentDamage(room: Room, playerId: string, damage: number) {
+  const now = Date.now() / 1000;
+  const previous = room.recentDamage.get(playerId);
+  const amount = (previous && now - previous.lastAt <= 12 ? previous.amount * 0.65 : 0) + damage;
+  room.recentDamage.set(playerId, { amount, lastAt: now });
 }
 
 function applySurvivalScore(room: Room, elapsed: number) {
@@ -731,10 +807,12 @@ function updateFeedbackEvents(room: Room) {
     .filter((event) => event.ttl > 0);
 }
 
-function createZombie(wave: number, forcedType?: ZombieType): Zombie {
+function createZombie(wave: number, forcedType?: ZombieType, director?: DirectorState): Zombie {
   const roll = Math.random();
-  const tankerChance = wave >= 3 ? Math.min(0.06 + wave * 0.028, 0.28) : 0;
-  const runnerChance = wave >= 2 ? Math.min(0.26 + wave * 0.04, 0.55) : 0;
+  const reliefFactor = 1 - (director?.relief ?? 0) * 0.65;
+  const earlyFactor = 1 - (director?.earlyEase ?? 0) * 0.8;
+  const tankerChance = wave >= 3 ? Math.min(0.055 + wave * 0.022, 0.24) * reliefFactor * earlyFactor : 0;
+  const runnerChance = wave >= 2 ? Math.min(0.21 + wave * 0.032, 0.46) * (1 - (director?.relief ?? 0) * 0.45) * earlyFactor : 0;
   const type: ZombieType = forcedType ?? (roll < tankerChance ? 'tanker' : roll < tankerChance + runnerChance ? 'runner' : 'normal');
   const scaling = Math.max(0, wave - 1);
   return {
@@ -745,7 +823,10 @@ function createZombie(wave: number, forcedType?: ZombieType): Zombie {
   };
 }
 
-function createResource(): ResourceNode {
+function createResource(room?: Room, director?: DirectorState, reliefSupply = false): ResourceNode {
+  const relief = director?.relief ?? 0;
+  const lowestHpRatio = director?.lowestHpRatio ?? 1;
+  const needRecovery = reliefSupply || relief >= 0.5 || lowestHpRatio <= 0.45;
   const types: ResourceType[] = [
     'chairParts',
     'chairParts',
@@ -760,11 +841,34 @@ function createResource(): ResourceNode {
     'powerModule',
     'medKit'
   ];
+  if (needRecovery) {
+    types.push('medKit', 'medKit', 'powerModule', 'partitionMaterial');
+  }
+  if (reliefSupply) {
+    types.push('medKit', 'powerModule', 'powerModule');
+  }
   return {
     id: makeId('resource'),
     type: types[Math.floor(Math.random() * types.length)],
-    position: randomFreePosition()
+    position: room && needRecovery ? resourceNearVulnerablePlayer(room) : randomFreePosition()
   };
+}
+
+function resourceNearVulnerablePlayer(room: Room) {
+  const target = [...room.players.values()]
+    .filter((player) => player.alive)
+    .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+  if (!target) return randomFreePosition();
+  for (let i = 0; i < 30; i += 1) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 120 + Math.random() * 180;
+    const point = clampToMap({
+      x: target.position.x + Math.cos(angle) * radius,
+      y: target.position.y + Math.sin(angle) * radius
+    }, RESOURCE_RADIUS);
+    if (!collidesWithWalls(point, RESOURCE_RADIUS, room.walls) && !collidesWithFacilities(room, point, RESOURCE_RADIUS)) return point;
+  }
+  return randomFreePosition();
 }
 
 function randomEdgePosition(): Vec2 {
@@ -1084,7 +1188,7 @@ io.on('connection', (socket) => {
   socket.on('joinRoom', (payload) => {
     const roomId = payload.roomId?.trim().toUpperCase() || makeRoomId();
     const existing = rooms.get(roomId);
-    const room = existing ?? createRoom(roomId, payload.settings);
+    const room = existing ?? createRoom(roomId, payload.settings, payload.roomTitle);
     if (!existing) rooms.set(roomId, room);
     if (room.phase !== 'lobby' && room.phase !== 'ended') {
       socket.emit('errorMessage', '진행 중인 방에는 입장할 수 없습니다.');
