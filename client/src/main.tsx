@@ -13,7 +13,14 @@ import type {
   ServerToClientEvents,
   Vec2
 } from '../../shared/src/types';
-import { EQUIPMENT_DESCRIPTIONS, EQUIPMENT_LABELS, RESOURCE_LABELS, resourceKeys } from '../../shared/src/gameRules';
+import {
+  EQUIPMENT_DESCRIPTIONS,
+  EQUIPMENT_LABELS,
+  RESOURCE_LABELS,
+  getPartitionPlacement,
+  resourceKeys,
+  type PartitionPlacement
+} from '../../shared/src/gameRules';
 import { ConceptArtBoard } from './ConceptArtBoard';
 import avatarAtlasUrl from './assets/office-player-avatars.png';
 import propAtlasUrl from './assets/office-props-atlas.png';
@@ -27,6 +34,7 @@ type VisualEffect = Omit<FeedbackEvent, 'type'> & {
 };
 type AudioCue = FeedbackEvent['type'] | 'shoot' | 'melee';
 type TouchControlSide = 'left' | 'right';
+type InstallItem = Extract<ResourceType, 'partitionMaterial'>;
 
 const socket: GameSocket = io();
 const TOUCH_CONTROL_SIDE_KEY = 'zombie-office-survival.touchControlSide';
@@ -73,6 +81,13 @@ const AVATARS = [
   { id: 1, label: '핑크 코랄', col: 1, row: 0 },
   { id: 2, label: '골드 가드', col: 0, row: 1 },
   { id: 3, label: '바이올렛', col: 1, row: 1 }
+] as const;
+const AVATAR_CELL_SIZE = 512;
+const AVATAR_VISUAL_OFFSETS = [
+  { x: -32, y: -20 },
+  { x: 54, y: -19 },
+  { x: -26, y: 61 },
+  { x: 53, y: 61 }
 ] as const;
 const CANVAS_AVATAR_STYLES = [
   { hair: '#20282c', cloth: '#f4f7f1', accent: '#6fd7c8', cosmetic: 'pin' },
@@ -436,10 +451,7 @@ function ProfileModal({
             >
               <span
                 className="avatar-thumb"
-                style={{
-                  backgroundImage: `url(${avatarAtlasUrl})`,
-                  backgroundPosition: spriteBackgroundPosition(avatar.col, avatar.row, 2, 2)
-                }}
+                style={avatarSelectionSpriteStyle(avatar, 64)}
               />
             </button>
           ))}
@@ -447,10 +459,7 @@ function ProfileModal({
         <div className="avatar-preview compact">
           <span
             className="avatar-preview-image"
-            style={{
-              backgroundImage: `url(${avatarAtlasUrl})`,
-              backgroundPosition: spriteBackgroundPosition(AVATARS[avatarId].col, AVATARS[avatarId].row, 2, 2)
-            }}
+            style={avatarSelectionSpriteStyle(AVATARS[avatarId], 92)}
           />
           <div>
             <strong>{AVATARS[avatarId].label}</strong>
@@ -471,7 +480,9 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
   const [touchControlSide, setTouchControlSide] = useState<TouchControlSide>(() => readTouchControlSide());
   const [touchControlOpen, setTouchControlOpen] = useState(false);
-  const queuedItem = useRef<{ type: ResourceType; requestId: number; until: number } | null>(null);
+  const [selectedInstallItem, setSelectedInstallItem] = useState<InstallItem | null>(null);
+  const selectedInstallItemRef = useRef<InstallItem | null>(null);
+  const queuedItem = useRef<{ type: ResourceType; requestId: number; until: number; aim?: Vec2 } | null>(null);
   const itemRequestSeq = useRef(0);
   const seenFeedback = useRef(new Set<string>());
   const visualEffects = useRef<VisualEffect[]>([]);
@@ -488,11 +499,11 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     const currentMe = current.me;
     const move = keyboardMove(pressed.current, joystick.current?.value);
     const canFight = Boolean(currentMe?.alive);
-    const autoAim = canFight && currentMe ? getAutoAim(current.snapshot, currentMe) : undefined;
-    const aim = autoAim ? autoAim.direction : pointer.current;
     const now = performance.now();
     if (!canFight || (queuedItem.current && queuedItem.current.until < now)) queuedItem.current = null;
     const useItemRequest = canFight ? queuedItem.current : null;
+    const autoAim = canFight && currentMe ? getAutoAim(current.snapshot, currentMe) : undefined;
+    const aim = useItemRequest?.aim ?? (autoAim ? autoAim.direction : getPlacementAim(currentMe, pointer.current));
     const input: PlayerInput = {
       move,
       aim,
@@ -504,22 +515,38 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     socket.emit('input', input);
   }, []);
 
-  const queueItemUse = useCallback((type: ResourceType) => {
+  const queueItemUse = useCallback((type: ResourceType, aim?: Vec2) => {
     itemRequestSeq.current += 1;
     queuedItem.current = {
       type,
       requestId: itemRequestSeq.current,
-      until: performance.now() + ITEM_INPUT_HOLD_MS
+      until: performance.now() + ITEM_INPUT_HOLD_MS,
+      aim
     };
     sendInput();
   }, [sendInput]);
+
+  const confirmPartitionInstall = useCallback(() => {
+    const currentMe = latestInputState.current.me;
+    if (!currentMe?.alive || currentMe.inventory.partitionMaterial <= 0) return;
+    queueItemUse('partitionMaterial', getPlacementAim(currentMe, pointer.current));
+    setSelectedInstallItem(null);
+  }, [queueItemUse]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       audio.current.unlock();
       pressed.current.add(event.code);
       if (!event.repeat && event.code === 'KeyQ') queueItemUse('medKit');
-      if (!event.repeat && event.code === 'KeyE') queueItemUse('partitionMaterial');
+      if (!event.repeat && event.code === 'KeyE') {
+        if (selectedInstallItemRef.current === 'partitionMaterial') confirmPartitionInstall();
+        else if ((latestInputState.current.me?.inventory.partitionMaterial ?? 0) > 0) setSelectedInstallItem('partitionMaterial');
+      }
+      if (!event.repeat && event.code === 'Escape') setSelectedInstallItem(null);
+      if (!event.repeat && (event.code === 'Enter' || event.code === 'Space') && selectedInstallItemRef.current === 'partitionMaterial') {
+        event.preventDefault();
+        confirmPartitionInstall();
+      }
       sendInput();
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -532,7 +559,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [queueItemUse, sendInput]);
+  }, [confirmPartitionInstall, queueItemUse, sendInput]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -545,6 +572,14 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     writeTouchControlSide(touchControlSide);
     joystick.current = null;
   }, [touchControlSide]);
+
+  useEffect(() => {
+    selectedInstallItemRef.current = selectedInstallItem;
+  }, [selectedInstallItem]);
+
+  useEffect(() => {
+    if (!me?.alive || me.inventory.partitionMaterial <= 0) setSelectedInstallItem(null);
+  }, [me?.alive, me?.inventory.partitionMaterial]);
 
   useEffect(() => {
     if (me) latestRender.current = { snapshot, me };
@@ -569,6 +604,15 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         }
         context.setTransform(dpr, 0, 0, dpr, 0, 0);
         const camera = smoothRenderPosition(`camera:${current.me.id}`, current.me.position, CAMERA_FOLLOW_AMOUNT);
+        const partitionPreview = selectedInstallItemRef.current === 'partitionMaterial' && current.me.inventory.partitionMaterial > 0
+          ? getPartitionPlacement(
+              current.me.position,
+              getPlacementAim(current.me, pointer.current),
+              current.me.upgrades.partition,
+              current.snapshot.walls,
+              current.snapshot.facilities
+            )
+          : undefined;
         drawGame(
           context,
           rect.width,
@@ -578,7 +622,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           spriteSheet,
           propAtlas,
           avatarAtlas,
-          undefined,
+          partitionPreview,
           visualEffects.current
         );
       }
@@ -629,9 +673,11 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         }}
         onMouseDown={() => {
           audio.current.unlock();
+          if (selectedInstallItemRef.current === 'partitionMaterial') confirmPartitionInstall();
         }}
         onTouchStart={(event) => {
           handleTouch(event, joystick, touchControlSide);
+          if (selectedInstallItemRef.current === 'partitionMaterial') confirmPartitionInstall();
           sendInput();
         }}
         onTouchMove={(event) => {
@@ -679,9 +725,15 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
               key={resource}
               type="button"
               className={`usable-item-button ${count > 0 ? 'ready' : 'empty'}`}
+              aria-pressed={resource === selectedInstallItem}
               disabled={count <= 0 || isSpectating}
               onClick={() => {
                 if (isSpectating) return;
+                if (resource === 'partitionMaterial') {
+                  if (selectedInstallItem === 'partitionMaterial') confirmPartitionInstall();
+                  else setSelectedInstallItem('partitionMaterial');
+                  return;
+                }
                 queueItemUse(resource);
               }}
             >
@@ -691,7 +743,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
                   backgroundPosition: spriteBackgroundPosition(RESOURCE_SPRITES[resource].col, RESOURCE_SPRITES[resource].row, 4, 4)
                 }}
               />
-              <span>{resource === 'medKit' ? 'Q' : 'E'}</span>
+              <span>{resource === 'medKit' ? 'Q' : selectedInstallItem === 'partitionMaterial' ? '확정' : 'E'}</span>
               <strong>{RESOURCE_LABELS[resource]}</strong>
               <b>{count}</b>
             </button>
@@ -826,6 +878,17 @@ function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
   };
 }
 
+function getPlacementAim(player: GameSnapshot['players'][number] | undefined, pointerAim: Vec2): Vec2 {
+  const pointerLength = Math.hypot(pointerAim.x, pointerAim.y);
+  if (pointerLength > 0.001) {
+    return {
+      x: pointerAim.x / pointerLength,
+      y: pointerAim.y / pointerLength
+    };
+  }
+  return player?.aim ?? { x: 1, y: 0 };
+}
+
 function getThreatLabel(wave: number) {
   if (wave >= 8) return { label: '매우 높음', tone: 'extreme' };
   if (wave >= 5) return { label: '높음', tone: 'high' };
@@ -837,6 +900,19 @@ function spriteBackgroundPosition(col: number, row: number, columns: number, row
   const x = columns <= 1 ? 0 : (col / (columns - 1)) * 100;
   const y = rows <= 1 ? 0 : (row / (rows - 1)) * 100;
   return `${x}% ${y}%`;
+}
+
+function avatarSelectionSpriteStyle(avatar: (typeof AVATARS)[number], displaySize: number): React.CSSProperties {
+  const baseX = avatar.col === 0 ? '0%' : '100%';
+  const baseY = avatar.row === 0 ? '0%' : '100%';
+  const offset = AVATAR_VISUAL_OFFSETS[avatar.id];
+  const x = Math.round((offset.x / AVATAR_CELL_SIZE) * displaySize * 10) / 10;
+  const y = Math.round((offset.y / AVATAR_CELL_SIZE) * displaySize * 10) / 10;
+
+  return {
+    backgroundImage: `url(${avatarAtlasUrl})`,
+    backgroundPosition: `calc(${baseX} + ${x}px) calc(${baseY} + ${y}px)`
+  };
 }
 
 function handleTouch(
@@ -989,7 +1065,7 @@ function drawGame(
   spriteSheet: HTMLImageElement | null,
   propAtlas: HTMLImageElement | null,
   avatarAtlas: HTMLImageElement | null,
-  selectedFacility: FacilityType | undefined,
+  partitionPreview: PartitionPlacement | undefined,
   effects: VisualEffect[]
 ) {
   context.clearRect(0, 0, width, height);
@@ -1001,6 +1077,9 @@ function drawGame(
   drawOfficeFloor(context, snapshot.map.width, snapshot.map.height, propAtlas);
   for (const wall of snapshot.walls) {
     drawWall(context, wall);
+  }
+  for (const warning of snapshot.spawnWarnings) {
+    drawSpawnWarning(context, warning);
   }
   for (const resource of snapshot.resources) {
     drawWorldResource(context, propAtlas, resource.type, resource.position);
@@ -1015,6 +1094,7 @@ function drawGame(
     context.fillStyle = 'rgba(255,255,255,0.35)';
     context.fillRect(facility.position.x - hpBarWidth / 2, hpBarTop, Math.max(0, facility.hp / 220) * hpBarWidth, 4);
   }
+  if (partitionPreview) drawPartitionPreview(context, partitionPreview);
   for (const projectile of snapshot.projectiles) {
     drawProjectile(context, projectile);
   }
@@ -1237,6 +1317,58 @@ function drawProjectile(context: CanvasRenderingContext2D, projectile: GameSnaps
   context.beginPath();
   context.arc(projectile.position.x, projectile.position.y, 5, 0, Math.PI * 2);
   context.fill();
+  context.restore();
+}
+
+function drawSpawnWarning(context: CanvasRenderingContext2D, warning: GameSnapshot['spawnWarnings'][number]) {
+  const progress = 1 - Math.max(0, Math.min(1, warning.ttl / Math.max(0.001, warning.duration)));
+  const pulse = 0.5 + Math.sin(performance.now() * 0.018) * 0.5;
+  const radius = warning.type === 'tanker' ? 46 : warning.type === 'runner' ? 34 : 38;
+  const ringRadius = radius + progress * 18 + pulse * 4;
+  const color = warning.type === 'tanker' ? '#a979ff' : warning.type === 'runner' ? '#ff9d5c' : '#ff6f61';
+  const label = warning.type === 'tanker' ? '대형 접근' : warning.type === 'runner' ? '고속 접근' : '좀비 접근';
+
+  context.save();
+  context.translate(warning.position.x, warning.position.y);
+  context.globalAlpha = 0.22 + progress * 0.38;
+  context.fillStyle = color;
+  context.beginPath();
+  context.arc(0, 0, radius * (0.55 + progress * 0.2), 0, Math.PI * 2);
+  context.fill();
+
+  context.globalAlpha = 0.82;
+  context.strokeStyle = color;
+  context.lineWidth = 4;
+  context.setLineDash([10, 7]);
+  context.beginPath();
+  context.arc(0, 0, ringRadius, 0, Math.PI * 2);
+  context.stroke();
+  context.setLineDash([]);
+
+  context.globalAlpha = 0.95;
+  context.strokeStyle = 'rgba(23,33,29,0.72)';
+  context.lineWidth = 5;
+  context.beginPath();
+  context.moveTo(-12, -12);
+  context.lineTo(0, 12);
+  context.lineTo(12, -12);
+  context.stroke();
+  context.strokeStyle = '#fff4a3';
+  context.lineWidth = 2.5;
+  context.beginPath();
+  context.moveTo(-12, -12);
+  context.lineTo(0, 12);
+  context.lineTo(12, -12);
+  context.stroke();
+
+  context.font = '800 12px sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.strokeStyle = 'rgba(23,33,29,0.78)';
+  context.lineWidth = 3;
+  context.strokeText(label, 0, -radius - 18);
+  context.fillStyle = '#fff4a3';
+  context.fillText(label, 0, -radius - 18);
   context.restore();
 }
 
@@ -1690,6 +1822,37 @@ function drawFacilityNode(context: CanvasRenderingContext2D, type: FacilityType,
     context.fill();
   }
 
+  context.restore();
+}
+
+function drawPartitionPreview(context: CanvasRenderingContext2D, placement: PartitionPlacement) {
+  const { position, width, height, valid } = placement;
+  const left = position.x - width / 2;
+  const top = position.y - height / 2;
+  const color = valid ? '#5ac8c8' : '#ff6f61';
+  const fill = valid ? 'rgba(90, 200, 200, 0.24)' : 'rgba(255, 111, 97, 0.18)';
+
+  context.save();
+  context.fillStyle = fill;
+  context.strokeStyle = color;
+  context.lineWidth = 3;
+  context.setLineDash(valid ? [10, 6] : [5, 5]);
+  context.beginPath();
+  context.roundRect(left, top, width, height, 6);
+  context.fill();
+  context.stroke();
+  context.setLineDash([]);
+
+  context.fillStyle = color;
+  context.globalAlpha = 0.9;
+  context.font = '800 12px sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.strokeStyle = 'rgba(23,33,29,0.72)';
+  context.lineWidth = 3;
+  const label = valid ? '설치 가능' : '공간 부족';
+  context.strokeText(label, position.x, top - 12);
+  context.fillText(label, position.x, top - 12);
   context.restore();
 }
 

@@ -18,6 +18,7 @@ import type {
   RoomSummary,
   RoomSettings,
   ServerToClientEvents,
+  SpawnWarning,
   UpgradeOption,
   UpgradeType,
   Vec2,
@@ -25,7 +26,7 @@ import type {
   Zombie,
   ZombieType
 } from '../../shared/src/types.js';
-import { FACILITY_COSTS, FACILITY_HP, ZOMBIE_SCORE } from '../../shared/src/gameRules.js';
+import { FACILITY_COSTS, FACILITY_HP, ZOMBIE_SCORE, getPartitionPlacement } from '../../shared/src/gameRules.js';
 
 type Room = {
   id: string;
@@ -37,6 +38,7 @@ type Room = {
   inputs: Map<string, PlayerInput>;
   processedItemRequests: Map<string, number>;
   zombies: Zombie[];
+  spawnWarnings: SpawnWarning[];
   resources: ResourceNode[];
   facilities: Facility[];
   powerZones: GameSnapshot['powerZones'];
@@ -87,6 +89,7 @@ const POWER_ZONE_RADIUS = 145;
 const POWER_ZONE_TTL = 8;
 const POWER_ZONE_DAMAGE_BONUS = 0.35;
 const POWER_ZONE_RANGE_BONUS = 110;
+const ZOMBIE_SPAWN_WARNING_SEC = 1.25;
 const DEFAULT_SETTINGS: RoomSettings = {
   maxPlayers: 6,
   gameDurationSec: 180,
@@ -141,6 +144,7 @@ function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string
     inputs: new Map(),
     processedItemRequests: new Map(),
     zombies: [],
+    spawnWarnings: [],
     resources: [],
     facilities: [],
     powerZones: [],
@@ -241,6 +245,7 @@ function snapshot(room: Room): GameSnapshot {
     players: [...room.players.values()],
     results: room.results,
     zombies: room.zombies,
+    spawnWarnings: room.spawnWarnings,
     resources: room.resources,
     facilities: room.facilities,
     powerZones: room.powerZones,
@@ -312,6 +317,7 @@ function startGame(room: Room) {
   room.nextReliefSupplyAt = 18;
   clearZombieAiTimers(room);
   room.zombies = [];
+  room.spawnWarnings = [];
   room.processedItemRequests = new Map();
   room.projectiles = [];
   room.facilities = [];
@@ -474,8 +480,8 @@ function useItem(room: Room, player: Player, type: ResourceType) {
   }
 
   if (type === 'partitionMaterial') {
+    if (!deployPartitionBarricades(room, player)) return;
     player.inventory.partitionMaterial -= 1;
-    deployPartitionBarricades(room, player);
     pushFeedback(room, 'build', player.position, '파티션');
   }
 }
@@ -784,27 +790,18 @@ function applyUpgrade(room: Room, player: Player, type: UpgradeType) {
 }
 
 function deployPartitionBarricades(room: Room, player: Player) {
-  const forward = length(player.aim) > 0 ? normalize(player.aim) : { x: 1, y: 0 };
-  const horizontalAim = Math.abs(forward.x) >= Math.abs(forward.y);
-  const level = player.upgrades.partition;
-  const width = horizontalAim ? 26 : 118 + level * 18;
-  const height = horizontalAim ? 118 + level * 18 : 26;
-  const forwardDistance = (horizontalAim ? width : height) / 2 + 54;
-  const position = clampToMap({
-    x: player.position.x + (horizontalAim ? Math.sign(forward.x || 1) * forwardDistance : 0),
-    y: player.position.y + (horizontalAim ? 0 : Math.sign(forward.y || 1) * forwardDistance)
-  }, Math.max(width, height) / 2);
-  const footprint = facilityRect({ position, width, height });
-  if (rectCollidesWithWalls(footprint, room.walls) || rectCollidesWithFacilities(room, footprint)) return;
+  const placement = getPartitionPlacement(player.position, player.aim, player.upgrades.partition, room.walls, room.facilities);
+  if (!placement.valid) return false;
   room.facilities.push({
     id: makeId('facility'),
     type: 'partitionBarricade',
     ownerId: player.id,
-    hp: 155 + level * 45,
-    position,
-    width,
-    height
+    hp: 155 + player.upgrades.partition * 45,
+    position: placement.position,
+    width: placement.width,
+    height: placement.height
   });
+  return true;
 }
 
 function spawnWorld(room: Room, elapsed: number) {
@@ -812,19 +809,22 @@ function spawnWorld(room: Room, elapsed: number) {
   room.nextResourceSpawnAt -= DT;
   room.nextReliefSupplyAt -= DT;
   const director = getDirectorState(room, elapsed);
+  updateSpawnWarnings(room);
   if (room.nextZombieSpawnAt <= 0) {
     const pressure = Math.floor(elapsed / 30);
     const baseCount = 3 + Math.ceil(room.wave * 1.05) + Math.floor(pressure * 1.05) + Math.max(0, director.aliveCount - 1) * 1.55;
     const easedCount = baseCount * (1 - director.earlyEase * 0.25) * (1 - director.relief * 0.38) * director.playerScale;
     const count = Math.min(Math.max(2, Math.round(easedCount)), 22);
     const cap = Math.round((42 + director.aliveCount * 12 + room.wave * 4) * (1 - director.relief * 0.22));
-    for (let i = 0; i < count && room.zombies.length < cap; i += 1) {
-      room.zombies.push(createZombie(room.wave, undefined, director));
+    const pendingCount = room.spawnWarnings.length;
+    for (let i = 0; i < count && room.zombies.length + pendingCount + i < cap; i += 1) {
+      room.spawnWarnings.push(createSpawnWarning(room.wave, undefined, director));
     }
     if (room.wave >= 4 && room.wave % 3 === 0 && director.relief < 0.45 && director.earlyEase <= 0) {
       const burstCount = Math.max(1, Math.round(director.aliveCount * (2 - director.relief)));
-      for (let i = 0; i < burstCount && room.zombies.length < cap; i += 1) {
-        room.zombies.push(createZombie(room.wave + 1, 'runner', director));
+      const nextPendingCount = room.spawnWarnings.length;
+      for (let i = 0; i < burstCount && room.zombies.length + nextPendingCount + i < cap; i += 1) {
+        room.spawnWarnings.push(createSpawnWarning(room.wave + 1, 'runner', director));
       }
     }
     room.nextZombieSpawnAt = Math.max(1.15, 4.4 - room.wave * 0.13 + director.earlyEase * 0.75 + director.relief * 1.65);
@@ -838,6 +838,20 @@ function spawnWorld(room: Room, elapsed: number) {
     room.nextReliefSupplyAt = 14 + Math.random() * 8;
   }
   room.lastWaveAt = elapsed;
+}
+
+function updateSpawnWarnings(room: Room) {
+  const ready: SpawnWarning[] = [];
+  room.spawnWarnings = room.spawnWarnings
+    .map((warning) => ({ ...warning, ttl: warning.ttl - DT }))
+    .filter((warning) => {
+      if (warning.ttl > 0) return true;
+      ready.push(warning);
+      return false;
+    });
+  for (const warning of ready) {
+    room.zombies.push(createZombie(room.wave, warning.type, undefined, warning.position));
+  }
 }
 
 function getDirectorState(room: Room, elapsed: number): DirectorState {
@@ -914,7 +928,18 @@ function updateFeedbackEvents(room: Room) {
     .filter((event) => event.ttl > 0);
 }
 
-function createZombie(wave: number, forcedType?: ZombieType, director?: DirectorState): Zombie {
+function createSpawnWarning(wave: number, forcedType?: ZombieType, director?: DirectorState): SpawnWarning {
+  const zombie = createZombie(wave, forcedType, director);
+  return {
+    id: makeId('spawn'),
+    type: zombie.type,
+    position: zombie.position,
+    ttl: ZOMBIE_SPAWN_WARNING_SEC,
+    duration: ZOMBIE_SPAWN_WARNING_SEC
+  };
+}
+
+function createZombie(wave: number, forcedType?: ZombieType, director?: DirectorState, position = randomEdgePosition()): Zombie {
   const roll = Math.random();
   const reliefFactor = 1 - (director?.relief ?? 0) * 0.65;
   const earlyFactor = 1 - (director?.earlyEase ?? 0) * 0.8;
@@ -926,7 +951,7 @@ function createZombie(wave: number, forcedType?: ZombieType, director?: Director
     id: makeId('zombie'),
     type,
     hp: type === 'tanker' ? 105 + scaling * 8 : type === 'runner' ? 22 + scaling * 2 : 32 + scaling * 3,
-    position: randomEdgePosition()
+    position
   };
 }
 

@@ -67,6 +67,14 @@ export type Zombie = {
   position: Vec2;
 };
 
+export type SpawnWarning = {
+  id: string;
+  type: ZombieType;
+  position: Vec2;
+  ttl: number;
+  duration: number;
+};
+
 export type ResourceNode = {
   id: string;
   type: ResourceType;
@@ -123,6 +131,7 @@ export type GameSnapshot = {
   players: Player[];
   results: Player[];
   zombies: Zombie[];
+  spawnWarnings: SpawnWarning[];
   resources: ResourceNode[];
   facilities: Facility[];
   powerZones: PowerZone[];
