@@ -576,11 +576,13 @@ canvas {
 }
 
 .pause-button {
-  top: 70px;
-  right: 12px;
-  min-height: 38px;
+  min-height: 30px;
+  border-radius: 8px;
+  padding: 0 10px;
   background: rgba(23, 59, 63, 0.9);
+  border-color: rgba(23, 59, 63, 0.22);
   color: #f7fbfa;
+  font-size: 12px;
   font-weight: 900;
 }
 
@@ -730,27 +732,9 @@ canvas {
   text-align: left;
 }
 
-.upgrade-pending-button,
 .upgrade-choice-hud {
   right: 12px;
   bottom: 184px;
-}
-
-.upgrade-pending-button {
-  min-width: 132px;
-  justify-content: space-between;
-  background: rgba(255, 244, 163, 0.94);
-  border-color: rgba(240, 200, 106, 0.66);
-  color: #17211d;
-}
-
-.upgrade-pending-button strong {
-  font-size: 13px;
-}
-
-.upgrade-pending-button span {
-  color: #9e3232;
-  font-weight: 900;
 }
 
 .upgrade-choice-hud {
@@ -758,7 +742,16 @@ canvas {
   display: grid;
   gap: 10px;
   align-items: stretch;
-  background: rgba(247, 251, 250, 0.94);
+  background: rgba(247, 251, 250, 0.68);
+  border-color: rgba(255, 255, 255, 0.36);
+  opacity: 0.82;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.upgrade-choice-hud:hover,
+.upgrade-choice-hud:focus-within {
+  background: rgba(247, 251, 250, 0.92);
+  opacity: 1;
 }
 
 .upgrade-choice-title {
@@ -772,13 +765,8 @@ canvas {
   font-size: 15px;
 }
 
-.upgrade-choice-title button {
-  min-height: 28px;
-  border-radius: 8px;
-  padding: 0 10px;
-  background: rgba(23, 59, 63, 0.08);
-  color: rgba(23, 33, 29, 0.78);
-  font-size: 12px;
+.upgrade-choice-title span {
+  color: #0f6f72;
   font-weight: 900;
 }
 
@@ -794,14 +782,17 @@ canvas {
   justify-items: start;
   padding: 9px 10px;
   border-radius: 8px;
-  background: rgba(15, 139, 141, 0.12);
+  background: rgba(15, 139, 141, 0.18);
   border-color: rgba(15, 139, 141, 0.24);
   color: #17211d;
   text-align: left;
+  opacity: 0.86;
 }
 
-.upgrade-choice-list button:hover {
-  background: rgba(15, 139, 141, 0.2);
+.upgrade-choice-list button:hover,
+.upgrade-choice-list button:focus-visible {
+  background: rgba(15, 139, 141, 0.28);
+  opacity: 1;
 }
 
 .upgrade-choice-list button strong {
@@ -1046,9 +1037,24 @@ canvas {
     justify-content: flex-end;
   }
 
+  .mission-hud {
+    gap: 5px;
+    padding: 6px;
+  }
+
+  .mission-hud span,
+  .mission-hud strong,
+  .mission-hud b {
+    font-size: 12px;
+  }
+
+  .mission-hud b {
+    font-size: 15px;
+  }
+
   .pause-button {
-    top: 92px;
-    right: 8px;
+    min-height: 28px;
+    padding: 0 8px;
   }
 
   .pause-overlay strong {
@@ -1082,16 +1088,9 @@ canvas {
     justify-content: flex-end;
   }
 
-  .upgrade-pending-button,
   .upgrade-choice-hud {
     right: 12px;
     bottom: 278px;
-  }
-
-  .upgrade-pending-button {
-    min-width: 124px;
-    max-width: none;
-    padding: 8px 10px;
   }
 
   .upgrade-choice-hud {
@@ -1099,7 +1098,6 @@ canvas {
     max-width: calc(100vw - 24px);
   }
 
-  .game.joystick-right .upgrade-pending-button,
   .game.joystick-right .upgrade-choice-hud {
     left: 12px;
     right: auto;
@@ -1168,7 +1166,7 @@ canvas {
 
   .touch-control-menu {
     position: absolute;
-    top: 86px;
+    top: 132px;
     left: 50%;
     z-index: 2;
     display: flex;

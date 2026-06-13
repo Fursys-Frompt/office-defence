@@ -471,7 +471,6 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
   const [touchControlSide, setTouchControlSide] = useState<TouchControlSide>(() => readTouchControlSide());
   const [touchControlOpen, setTouchControlOpen] = useState(false);
-  const [upgradePanelOpen, setUpgradePanelOpen] = useState(false);
   const queuedItem = useRef<{ type: ResourceType; requestId: number; until: number } | null>(null);
   const itemRequestSeq = useRef(0);
   const seenFeedback = useRef(new Set<string>());
@@ -546,10 +545,6 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     writeTouchControlSide(touchControlSide);
     joystick.current = null;
   }, [touchControlSide]);
-
-  useEffect(() => {
-    if ((me?.pendingUpgradeChoices.length ?? 0) === 0) setUpgradePanelOpen(false);
-  }, [me?.pendingUpgradeChoices.length]);
 
   useEffect(() => {
     if (me) latestRender.current = { snapshot, me };
@@ -703,17 +698,11 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           );
         })}
       </section>
-      {pendingChoices.length > 0 && !isSpectating && !upgradePanelOpen && (
-        <button type="button" className="hud upgrade-pending-button" onClick={() => setUpgradePanelOpen(true)}>
-          <strong>업그레이드</strong>
-          <span>{pendingUpgradeCount > 1 ? `${pendingUpgradeCount}개 대기` : `Lv ${me?.level}`}</span>
-        </button>
-      )}
-      {pendingChoices.length > 0 && !isSpectating && upgradePanelOpen && (
+      {pendingChoices.length > 0 && !isSpectating && (
         <section className="hud upgrade-choice-hud" aria-label="레벨업 업그레이드 선택">
           <div className="upgrade-choice-title">
             <strong>Lv {me?.level} 업그레이드</strong>
-            <button type="button" onClick={() => setUpgradePanelOpen(false)}>접기</button>
+            <span>{pendingUpgradeCount > 1 ? `${pendingUpgradeCount}개 대기` : '선택 대기'}</span>
           </div>
           <div className="upgrade-choice-list">
             {pendingChoices.map((upgrade) => (
@@ -722,7 +711,6 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
                 type="button"
                 onClick={() => {
                   socket.emit('chooseUpgrade', upgrade.id);
-                  setUpgradePanelOpen(false);
                 }}
               >
                 <strong>{upgrade.title}</strong>
@@ -739,16 +727,16 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         <span>다음 {me ? Math.max(0, me.nextLevelKills - me.kills) : 0}킬</span>
         <span className={`threat ${threat.tone}`}>위협 {threat.label}</span>
         <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP 켜짐' : 'PVP 꺼짐'}</span>
+        {me?.host && (
+          <button
+            type="button"
+            className="pause-button"
+            onClick={() => socket.emit('pauseGame', snapshot.phase !== 'paused')}
+          >
+            {snapshot.phase === 'paused' ? '재개' : '일시정지'}
+          </button>
+        )}
       </section>
-      {me?.host && (
-        <button
-          type="button"
-          className="hud pause-button"
-          onClick={() => socket.emit('pauseGame', snapshot.phase !== 'paused')}
-        >
-          {snapshot.phase === 'paused' ? '재개' : '일시정지'}
-        </button>
-      )}
       {snapshot.phase === 'paused' && (
         <div className="pause-overlay">
           <strong>일시정지</strong>
