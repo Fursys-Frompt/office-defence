@@ -3,28 +3,28 @@ import './concept-art.css';
 
 const avatarSkins = [
   {
-    name: '클린',
-    mood: '단정하고 차분한 기본 생존자 스타일',
+    name: '오피스 틸',
+    mood: '안정적이고 차분한 기본 생존자 스타일',
     colors: ['#20282c', '#f4f7f1', '#6fd7c8'],
     head: 'bob',
     cosmetic: 'pin'
   },
   {
-    name: '네온',
+    name: '핑크 코랄',
     mood: '선명한 포인트 컬러가 있는 활동적인 스타일',
     colors: ['#1b2232', '#ff6873', '#63d8ff'],
     head: 'headset',
     cosmetic: 'band'
   },
   {
-    name: '소프트',
-    mood: '따뜻하고 편안한 캐주얼 스타일',
+    name: '골드 가드',
+    mood: '따뜻하고 믿음직한 구조대 스타일',
     colors: ['#6c4d3f', '#ffd38a', '#9edfb5'],
     head: 'bun',
     cosmetic: 'clip'
   },
   {
-    name: '팝',
+    name: '바이올렛',
     mood: '밝고 수집 욕구를 주는 개성 있는 스타일',
     colors: ['#29334a', '#9a7fd2', '#f2c84e'],
     head: 'cap',
@@ -33,16 +33,15 @@ const avatarSkins = [
 ];
 
 const zombieTypes = [
-  { name: '일반형', note: '가장 기본적인 압박을 주는 표준 좀비', body: 'walker' },
-  { name: '질주형', note: '얇은 실루엣으로 빠른 접근이 읽히는 좀비', body: 'skitter' },
-  { name: '중장형', note: '묵직한 덩치로 느리지만 강한 위협을 주는 좀비', body: 'brute' }
+  { name: '일반형', note: '가장 기본적인 압박을 주는 사무실 좀비', body: 'walker' },
+  { name: '질주형', note: '짧은 돌진으로 빠르게 접근하는 좀비', body: 'skitter' },
+  { name: '중장형', note: '느리지만 강한 압박을 주는 튼튼한 좀비', body: 'brute' }
 ];
 
 const itemGroups = [
   { name: '의자 부품', color: '#35c7bd', shape: 'chair' },
   { name: '책상 부품', color: '#e6be60', shape: 'crate' },
-  { name: '파티션 소재', color: '#a7debd', shape: 'panel' },
-  { name: '전력 코어', color: '#80dff0', shape: 'bolt' },
+  { name: '파티션 키트', color: '#a7debd', shape: 'panel' },
   { name: '구급 키트', color: '#f56e68', shape: 'cross' }
 ];
 
@@ -58,7 +57,7 @@ export function ConceptArtBoard() {
           </p>
         </div>
         <div className="concept-principles" aria-label="디자인 원칙">
-          <span>개인 점수 중심</span>
+          <span>개인 취향 중심</span>
           <span>오피스 생존</span>
           <span>스킨 수집</span>
           <span>상단 시점</span>
@@ -68,7 +67,7 @@ export function ConceptArtBoard() {
       <section className="concept-section">
         <div className="section-heading">
           <p className="concept-kicker">아바타</p>
-          <h2>위에서 내려다보는 스킨</h2>
+          <h2>위에서 내려보는 스킨</h2>
         </div>
         <div className="skin-grid">
           {avatarSkins.map((skin, index) => (
@@ -110,7 +109,7 @@ export function ConceptArtBoard() {
         <div>
           <div className="section-heading">
             <p className="concept-kicker">적</p>
-            <h2>상단 시점 적 실루엣</h2>
+            <h2>상단 시점 적 무리</h2>
           </div>
           <div className="zombie-row">
             {zombieTypes.map((zombie) => (

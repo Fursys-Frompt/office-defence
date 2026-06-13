@@ -18,6 +18,8 @@ import type {
   RoomSummary,
   RoomSettings,
   ServerToClientEvents,
+  UpgradeOption,
+  UpgradeType,
   Vec2,
   Wall,
   Zombie,
@@ -90,6 +92,16 @@ const DEFAULT_SETTINGS: RoomSettings = {
   pvpEnabled: false
 };
 const DEFAULT_ROOM_TITLE = '생존 방';
+const LEVEL_KILL_THRESHOLDS = [3, 7, 12, 18, 25, 33, 42, 52];
+const MAX_PENDING_UPGRADES = 2;
+const UPGRADE_POOL: Array<Omit<UpgradeOption, 'id'>> = [
+  { type: 'range', title: '시야 확보', description: '공격 사거리가 8% 증가합니다.' },
+  { type: 'damage', title: '집중 사격', description: '기본 공격과 자동 공격 피해가 증가합니다.' },
+  { type: 'maxHp', title: '응급 체력', description: '최대 체력이 15 증가하고 즉시 조금 회복합니다.' },
+  { type: 'moveSpeed', title: '동선 숙달', description: '이동 속도가 6% 증가합니다.' },
+  { type: 'medKit', title: '응급 처치', description: '구급 회복량과 획득 점수가 증가합니다.' },
+  { type: 'partition', title: '파티션 전개', description: '파티션 바리케이드 내구도가 증가합니다.' }
+];
 
 const rooms = new Map<string, Room>();
 const socketRooms = new Map<string, string>();
@@ -182,6 +194,11 @@ function createPlayer(id: string, nickname: string, host: boolean, avatarId = 0)
     score: 0,
     kills: 0,
     combo: 0,
+    level: 1,
+    nextLevelKills: LEVEL_KILL_THRESHOLDS[0],
+    pendingUpgradeChoices: [],
+    pendingUpgradeCount: 0,
+    upgrades: emptyUpgrades(),
     inventory: emptyInventory(),
     resourcesCollected: 0,
     facilitiesBuilt: 0,
@@ -194,7 +211,6 @@ function emptyInventory(): ResourceInventory {
     chairParts: 0,
     deskParts: 0,
     partitionMaterial: 0,
-    powerModule: 0,
     medKit: 0
   };
 }
@@ -238,6 +254,17 @@ function snapshot(room: Room): GameSnapshot {
 
 function broadcast(room: Room) {
   io.to(room.id).emit('snapshot', snapshot(room));
+}
+
+function emptyUpgrades() {
+  return {
+    range: 0,
+    damage: 0,
+    maxHp: 0,
+    moveSpeed: 0,
+    medKit: 0,
+    partition: 0
+  };
 }
 
 function roomSummaries(): RoomSummary[] {
@@ -303,6 +330,11 @@ function startGame(room: Room) {
     player.score = 0;
     player.kills = 0;
     player.combo = 0;
+    player.level = 1;
+    player.nextLevelKills = LEVEL_KILL_THRESHOLDS[0];
+    player.pendingUpgradeChoices = [];
+    player.pendingUpgradeCount = 0;
+    player.upgrades = emptyUpgrades();
     player.inventory = emptyInventory();
     player.inventory.chairParts = 0;
     player.inventory.deskParts = 0;
@@ -353,7 +385,7 @@ function updatePlayers(room: Room, elapsed: number) {
     if (!input) continue;
 
     const move = normalize(input.move);
-    const speed = player.alive ? 220 : 255;
+    const speed = player.alive ? playerMoveSpeed(player) : 255;
     const next = {
       x: player.position.x + move.x * speed * DT,
       y: player.position.y + move.y * speed * DT
@@ -400,7 +432,7 @@ function canAct(room: Room, playerId: string, action: string, cooldown: number) 
 }
 
 function meleeAttack(room: Room, player: Player) {
-  const damage = 28 + comboDamageBonus(player);
+  const damage = 28 + player.upgrades.damage * 3 + comboDamageBonus(player);
   for (const zombie of room.zombies) {
     if (distance(player.position, zombie.position) < 54) damageZombie(room, zombie, damage, player.id);
   }
@@ -418,21 +450,16 @@ function useItem(room: Room, player: Player, type: ResourceType) {
   if (type === 'medKit') {
     if (player.hp >= player.maxHp - 1) return;
     player.inventory.medKit -= 1;
-    player.hp = Math.min(player.maxHp, player.hp + 28);
-    pushFeedback(room, 'heal', player.position, '+28');
+    const heal = 28 + player.upgrades.medKit * 8;
+    player.hp = Math.min(player.maxHp, player.hp + heal);
+    pushFeedback(room, 'heal', player.position, `+${heal}`);
     return;
   }
 
-  if (type === 'powerModule') {
-    player.inventory.powerModule -= 1;
-    room.powerZones.push({
-      id: makeId('powerZone'),
-      ownerId: player.id,
-      position: { ...player.position },
-      radius: POWER_ZONE_RADIUS,
-      ttl: POWER_ZONE_TTL
-    });
-    pushFeedback(room, 'build', player.position, 'POWER');
+  if (type === 'partitionMaterial') {
+    player.inventory.partitionMaterial -= 1;
+    deployPartitionBarricades(room, player);
+    pushFeedback(room, 'build', player.position, '파티션');
   }
 }
 
@@ -444,7 +471,8 @@ function updatePowerZones(room: Room) {
 
 function playerAttackRange(room: Room, player: Player) {
   const zoneBonus = isInPowerZone(room, player.position) ? POWER_ZONE_RANGE_BONUS : 0;
-  return BASE_ATTACK_RANGE + player.inventory.deskParts * DESK_RANGE_BONUS + zoneBonus;
+  const levelBonus = 1 + player.upgrades.range * 0.08;
+  return (BASE_ATTACK_RANGE + player.inventory.deskParts * DESK_RANGE_BONUS + zoneBonus) * levelBonus;
 }
 
 function isInPowerZone(room: Room, point: Vec2) {
@@ -510,7 +538,6 @@ function collectResources(room: Room, player: Player) {
 function updateEquipment(room: Room, player: Player, elapsed: number) {
   updateDeskBarrage(room, player);
   updateChairShield(room, player, elapsed);
-  updatePanelGuard(room, player);
 }
 
 function updateDeskBarrage(room: Room, player: Player) {
@@ -520,7 +547,7 @@ function updateDeskBarrage(room: Room, player: Player) {
   if (!canEquipmentAct(room, player.id, 'desk', cooldown)) return;
   const range = playerAttackRange(room, player) + 80;
   const targets = nearestAutoAttackTargets(room, player, 1 + Math.floor(level / 5), range);
-  const damage = 9 + level * 2.2 + comboDamageBonus(player);
+  const damage = 9 + level * 2.2 + player.upgrades.damage * 2 + comboDamageBonus(player);
   for (const target of targets) {
     const dir = normalize({ x: target.position.x - player.position.x, y: target.position.y - player.position.y });
     room.projectiles.push({
@@ -550,18 +577,6 @@ function updateChairShield(room: Room, player: Player, elapsed: number) {
       y: player.position.y + Math.sin(elapsed * 4.2) * Math.min(radius, 92)
     };
     pushFeedback(room, 'hit', orbit, '의자', 0.18);
-  }
-}
-
-function updatePanelGuard(room: Room, player: Player) {
-  const level = player.inventory.partitionMaterial;
-  if (level <= 0) return;
-  const cooldown = Math.max(0.5, 1.05 - level * 0.035);
-  if (!canEquipmentAct(room, player.id, 'panel', cooldown)) return;
-  const radius = 70 + level * 6;
-  const damage = 3.5 + level * 1.15;
-  for (const target of nearestAutoAttackTargets(room, player, 14 + Math.floor(level / 2), radius)) {
-    damageAutoAttackTarget(room, target, damage, player);
   }
 }
 
@@ -679,16 +694,16 @@ function damageZombie(room: Room, zombie: Zombie, damage: number, attackerId: st
   const attacker = room.players.get(attackerId);
   if (!attacker) return;
   attacker.kills += 1;
+  checkLevelUp(room, attacker);
   const combo = registerKillCombo(room, attacker);
-  const score = zombieScore(zombie.type) + Math.min(combo - 1, 7) * 3;
+  const score = zombieScore(zombie.type);
   attacker.score += score;
-  pushFeedback(room, 'kill', zombie.position, combo >= 2 ? `x${combo} +${score}` : `+${score}`);
+  pushFeedback(room, 'kill', zombie.position, `+${score}`);
 }
 
 function damagePlayer(room: Room, target: Player, damage: number, attacker?: Player) {
   if (!target.alive) return;
-  const guardLevel = target.inventory.partitionMaterial;
-  const reduction = Math.min(0.26, guardLevel * 0.032);
+  const reduction = Math.min(0.18, target.upgrades.maxHp * 0.025);
   const effectiveDamage = damage * (1 - reduction);
   target.hp -= effectiveDamage;
   recordRecentDamage(room, target.id, effectiveDamage);
@@ -698,6 +713,79 @@ function damagePlayer(room: Room, target: Player, damage: number, attacker?: Pla
   target.alive = false;
   if (attacker && attacker.id !== target.id) attacker.score += 40;
   pushFeedback(room, 'playerDown', target.position, 'DOWN');
+}
+
+function checkLevelUp(room: Room, player: Player) {
+  while (player.kills >= player.nextLevelKills && player.pendingUpgradeCount < MAX_PENDING_UPGRADES) {
+    player.level += 1;
+    player.pendingUpgradeCount += 1;
+    player.nextLevelKills = nextLevelKillRequirement(player.level);
+    player.pendingUpgradeChoices = createUpgradeChoices(player);
+    player.hp = Math.min(player.maxHp, player.hp + 10);
+    pushFeedback(room, 'heal', player.position, `Lv ${player.level}`, 0.08);
+  }
+}
+
+function nextLevelKillRequirement(level: number) {
+  return LEVEL_KILL_THRESHOLDS[level - 1] ?? LEVEL_KILL_THRESHOLDS[LEVEL_KILL_THRESHOLDS.length - 1] + (level - LEVEL_KILL_THRESHOLDS.length) * 12;
+}
+
+function createUpgradeChoices(player: Player): UpgradeOption[] {
+  const weighted = [...UPGRADE_POOL].sort((a, b) => {
+    const aLevel = player.upgrades[a.type];
+    const bLevel = player.upgrades[b.type];
+    return aLevel - bLevel || Math.random() - 0.5;
+  });
+  return weighted.slice(0, 3).map((upgrade) => ({
+    ...upgrade,
+    id: `${upgrade.type}:${player.level}:${Math.random().toString(36).slice(2, 7)}`
+  }));
+}
+
+function chooseUpgrade(room: Room, player: Player, upgradeId: string) {
+  if (!player.alive || player.pendingUpgradeCount <= 0) return;
+  const selected = player.pendingUpgradeChoices.find((upgrade) => upgrade.id === upgradeId);
+  if (!selected) return;
+  applyUpgrade(room, player, selected.type);
+  player.pendingUpgradeCount -= 1;
+  player.pendingUpgradeChoices = player.pendingUpgradeCount > 0 ? createUpgradeChoices(player) : [];
+  checkLevelUp(room, player);
+}
+
+function applyUpgrade(room: Room, player: Player, type: UpgradeType) {
+  player.upgrades[type] += 1;
+  if (type === 'maxHp') {
+    player.maxHp += 15;
+    player.hp = Math.min(player.maxHp, player.hp + 20);
+    pushFeedback(room, 'heal', player.position, '+HP');
+    return;
+  }
+  if (type === 'medKit') {
+    player.hp = Math.min(player.maxHp, player.hp + 8);
+  }
+  pushFeedback(room, 'build', player.position, 'UP');
+}
+
+function deployPartitionBarricades(room: Room, player: Player) {
+  const distanceFromPlayer = 74;
+  const offsets: Vec2[] = [
+    { x: 0, y: -distanceFromPlayer },
+    { x: distanceFromPlayer, y: 0 },
+    { x: 0, y: distanceFromPlayer },
+    { x: -distanceFromPlayer, y: 0 }
+  ];
+  const hp = 95 + player.upgrades.partition * 35;
+  for (const offset of offsets) {
+    const position = clampToMap({ x: player.position.x + offset.x, y: player.position.y + offset.y }, FACILITY_RADIUS);
+    if (collidesWithWalls(position, FACILITY_RADIUS, room.walls) || collidesWithFacilities(room, position, FACILITY_RADIUS)) continue;
+    room.facilities.push({
+      id: makeId('facility'),
+      type: 'partitionBarricade',
+      ownerId: player.id,
+      hp,
+      position
+    });
+  }
 }
 
 function spawnWorld(room: Room, elapsed: number) {
@@ -837,15 +925,14 @@ function createResource(room?: Room, director?: DirectorState, reliefSupply = fa
     'partitionMaterial',
     'partitionMaterial',
     'partitionMaterial',
-    'powerModule',
-    'powerModule',
+    'partitionMaterial',
     'medKit'
   ];
   if (needRecovery) {
-    types.push('medKit', 'medKit', 'powerModule', 'partitionMaterial');
+    types.push('medKit', 'medKit', 'partitionMaterial', 'partitionMaterial');
   }
   if (reliefSupply) {
-    types.push('medKit', 'powerModule', 'powerModule');
+    types.push('medKit', 'partitionMaterial', 'partitionMaterial');
   }
   return {
     id: makeId('resource'),
@@ -911,17 +998,17 @@ function nearestFacility(room: Room, point: Vec2) {
   return room.facilities.sort((a, b) => distance(point, a.position) - distance(point, b.position))[0];
 }
 
-function hasPowerBuff(room: Room, player: Player) {
-  return room.facilities.some((facility) => facility.type === 'powerAmplifier' && distance(player.position, facility.position) < 140);
-}
-
 function rangedDamage(room: Room, player: Player) {
-  const base = 11 + player.inventory.deskParts * 0.8 + comboDamageBonus(player);
+  const base = 11 + player.inventory.deskParts * 0.8 + player.upgrades.damage * 2.2 + comboDamageBonus(player);
   return isInPowerZone(room, player.position) ? base * (1 + POWER_ZONE_DAMAGE_BONUS) : base;
 }
 
+function playerMoveSpeed(player: Player) {
+  return 220 * (1 + player.upgrades.moveSpeed * 0.06);
+}
+
 function comboDamageBonus(player: Player) {
-  return Math.min(player.combo, 8);
+  return 0;
 }
 
 function registerKillCombo(room: Room, player: Player) {
@@ -1161,7 +1248,7 @@ function rectCenter(wall: Wall): Vec2 {
 
 function collidesWithFacilities(room: Room, point: Vec2, radius: number) {
   return room.facilities.some((facility) => {
-    if (facility.type === 'medStation' || facility.type === 'powerAmplifier') return false;
+    if (facility.type === 'medStation') return false;
     return distance(point, facility.position) < radius + FACILITY_RADIUS;
   });
 }
@@ -1227,6 +1314,14 @@ io.on('connection', (socket) => {
     room.remainingSec = room.settings.gameDurationSec;
     broadcast(room);
     broadcastRoomList();
+  });
+
+  socket.on('chooseUpgrade', (upgradeId) => {
+    const room = getSocketRoom(socket.id);
+    const player = room?.players.get(socket.id);
+    if (!room || !player || room.phase !== 'playing') return;
+    chooseUpgrade(room, player, upgradeId);
+    broadcast(room);
   });
 
   socket.on('input', (input) => {

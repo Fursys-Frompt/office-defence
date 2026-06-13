@@ -1,8 +1,18 @@
 export type GamePhase = 'lobby' | 'countdown' | 'playing' | 'ended';
 export type ZombieType = 'normal' | 'runner' | 'tanker';
-export type ResourceType = 'chairParts' | 'deskParts' | 'partitionMaterial' | 'powerModule' | 'medKit';
-export type FacilityType = 'partitionBarricade' | 'deskBarricade' | 'medStation' | 'powerAmplifier';
+export type ResourceType = 'chairParts' | 'deskParts' | 'partitionMaterial' | 'medKit';
+export type FacilityType = 'partitionBarricade' | 'deskBarricade' | 'medStation';
 export type ResourceInventory = Record<ResourceType, number>;
+export type UpgradeType = 'range' | 'damage' | 'maxHp' | 'moveSpeed' | 'medKit' | 'partition';
+
+export type UpgradeOption = {
+  id: string;
+  type: UpgradeType;
+  title: string;
+  description: string;
+};
+
+export type PlayerUpgrades = Record<UpgradeType, number>;
 
 export type Vec2 = {
   x: number;
@@ -38,6 +48,11 @@ export type Player = {
   score: number;
   kills: number;
   combo: number;
+  level: number;
+  nextLevelKills: number;
+  pendingUpgradeChoices: UpgradeOption[];
+  pendingUpgradeCount: number;
+  upgrades: PlayerUpgrades;
   inventory: ResourceInventory;
   resourcesCollected: number;
   facilitiesBuilt: number;
@@ -152,6 +167,7 @@ export type ClientToServerEvents = {
   requestRoomList: (callback?: (rooms: RoomSummary[]) => void) => void;
   setReady: (ready: boolean) => void;
   updateSettings: (settings: RoomSettings) => void;
+  chooseUpgrade: (upgradeId: string) => void;
   input: (input: PlayerInput) => void;
   leaveRoom: () => void;
 };

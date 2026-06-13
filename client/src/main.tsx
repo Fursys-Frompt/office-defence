@@ -49,14 +49,12 @@ const RESOURCE_SPRITES: Record<ResourceType, { col: number; row: number; size: n
   chairParts: { col: 0, row: 0, size: 34 },
   deskParts: { col: 1, row: 0, size: 34 },
   partitionMaterial: { col: 2, row: 0, size: 38 },
-  powerModule: { col: 3, row: 0, size: 36 },
   medKit: { col: 0, row: 1, size: 36 }
 };
 const FACILITY_SPRITES: Record<FacilityType, { col: number; row: number; size: number }> = {
   partitionBarricade: { col: 1, row: 1, size: 58 },
   deskBarricade: { col: 2, row: 1, size: 62 },
-  medStation: { col: 3, row: 1, size: 62 },
-  powerAmplifier: { col: 0, row: 2, size: 62 }
+  medStation: { col: 3, row: 1, size: 62 }
 };
 const DECOR_SPRITES = [
   { col: 1, row: 2, position: { x: 260, y: 210 }, size: 118 },
@@ -90,8 +88,8 @@ type MotionSample = {
 
 const motionSamples = new Map<string, MotionSample>();
 const renderPositions = new Map<string, Vec2>();
-const passiveItemKeys: ResourceType[] = ['chairParts', 'deskParts', 'partitionMaterial'];
-const usableItemKeys: ResourceType[] = ['medKit', 'powerModule'];
+const passiveItemKeys: ResourceType[] = ['chairParts', 'deskParts'];
+const usableItemKeys: ResourceType[] = ['medKit', 'partitionMaterial'];
 
 type PendingRoomAction = {
   mode: 'create' | 'join';
@@ -366,11 +364,11 @@ function GameGuideModal({ onClose }: { onClose: () => void }) {
           </article>
           <article>
             <strong>아이템</strong>
-            <p>책상은 사거리를 늘리고, 파티션은 피해를 줄입니다. 구급과 전력은 직접 사용해야 합니다.</p>
+            <p>책상은 사거리를 늘리고, 파티션은 사방 바리케이드를 전개합니다. 구급과 파티션은 직접 사용해야 합니다.</p>
           </article>
           <article>
             <strong>조작</strong>
-            <p>WASD로 이동합니다. 자동 조준이 가까운 대상을 공격합니다. Q는 구급, E는 전력 장판입니다.</p>
+            <p>WASD로 이동합니다. 자동 조준이 가까운 대상을 공격합니다. Q는 구급, E는 파티션 전개입니다.</p>
           </article>
           <article>
             <strong>난이도</strong>
@@ -504,7 +502,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       audio.current.unlock();
       pressed.current.add(event.code);
       if (event.code === 'KeyQ') queuedItem.current = 'medKit';
-      if (event.code === 'KeyE') queuedItem.current = 'powerModule';
+      if (event.code === 'KeyE') queuedItem.current = 'partitionMaterial';
       sendInput();
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -595,9 +593,10 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const hp = Math.ceil(me?.hp ?? 0);
   const maxHp = Math.max(1, Math.ceil(me?.maxHp ?? 100));
   const hpPercent = Math.max(0, Math.min(100, (hp / maxHp) * 100));
-  const combo = me?.combo ?? 0;
   const threat = getThreatLabel(snapshot.wave);
   const isSpectating = Boolean(me && !me.alive);
+  const pendingChoices = me?.pendingUpgradeChoices ?? [];
+  const pendingUpgradeCount = me?.pendingUpgradeCount ?? 0;
 
   return (
     <main className={`game joystick-${touchControlSide}`}>
@@ -683,18 +682,30 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           );
         })}
       </section>
+      {pendingChoices.length > 0 && !isSpectating && (
+        <section className="hud upgrade-choice-hud" aria-label="레벨업 업그레이드 선택">
+          <div className="upgrade-choice-title">
+            <strong>Lv {me?.level} 업그레이드</strong>
+            <span>{pendingUpgradeCount > 1 ? `${pendingUpgradeCount}개 대기` : '선택 대기'}</span>
+          </div>
+          <div className="upgrade-choice-list">
+            {pendingChoices.map((upgrade) => (
+              <button key={upgrade.id} type="button" onClick={() => socket.emit('chooseUpgrade', upgrade.id)}>
+                <strong>{upgrade.title}</strong>
+                <span>{upgrade.description}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       <section className="hud mission-hud top-right">
         <span><b>{snapshot.remainingSec}</b>초</span>
         <span>웨이브 <b>{snapshot.wave}</b></span>
+        <span>Lv <b>{me?.level ?? 1}</b></span>
+        <span>다음 {me ? Math.max(0, me.nextLevelKills - me.kills) : 0}킬</span>
         <span className={`threat ${threat.tone}`}>위협 {threat.label}</span>
         <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP 켜짐' : 'PVP 꺼짐'}</span>
       </section>
-      {combo >= 2 && (
-        <section className="hud combo-hud">
-          <strong>x{combo}</strong>
-          <span>연속 처치</span>
-        </section>
-      )}
       <div className="touch-control-menu">
         <button
           type="button"
@@ -929,7 +940,7 @@ function playerAttackRange(snapshot: GameSnapshot, player: GameSnapshot['players
   const zoneBonus = snapshot.powerZones.some((zone) => Math.hypot(zone.position.x - player.position.x, zone.position.y - player.position.y) <= zone.radius)
     ? POWER_ZONE_RANGE_BONUS
     : 0;
-  return BASE_ATTACK_RANGE + player.inventory.deskParts * DESK_RANGE_BONUS + zoneBonus;
+  return (BASE_ATTACK_RANGE + player.inventory.deskParts * DESK_RANGE_BONUS + zoneBonus) * (1 + player.upgrades.range * 0.08);
 }
 
 function drawGame(
@@ -1274,17 +1285,9 @@ function drawPowerZone(context: CanvasRenderingContext2D, zone: GameSnapshot['po
 
 function drawEquipmentAuras(context: CanvasRenderingContext2D, player: GameSnapshot['players'][number]) {
   const chairLevel = player.inventory.chairParts;
-  const panelLevel = player.inventory.partitionMaterial;
   const now = performance.now() / 1000;
 
   context.save();
-  if (panelLevel > 0) {
-    context.strokeStyle = 'rgba(126, 220, 155, 0.26)';
-    context.lineWidth = Math.min(8, 2 + panelLevel * 0.6);
-    context.beginPath();
-    context.arc(player.position.x, player.position.y, 70 + panelLevel * 6, 0, Math.PI * 2);
-    context.stroke();
-  }
   if (chairLevel > 0) {
     context.fillStyle = 'rgba(240, 200, 106, 0.86)';
     context.strokeStyle = 'rgba(23, 59, 63, 0.38)';
@@ -1512,22 +1515,6 @@ function drawResourceNode(context: CanvasRenderingContext2D, type: ResourceType,
     context.moveTo(0, -13);
     context.lineTo(0, 13);
     context.stroke();
-  } else if (type === 'powerModule') {
-    context.fillStyle = '#80dff0';
-    context.beginPath();
-    context.roundRect(-11, -11, 22, 22, 6);
-    context.fill();
-    context.stroke();
-    context.fillStyle = '#ffe06c';
-    context.beginPath();
-    context.moveTo(1, -8);
-    context.lineTo(-5, 1);
-    context.lineTo(0, 1);
-    context.lineTo(-2, 8);
-    context.lineTo(7, -1);
-    context.lineTo(1, -1);
-    context.closePath();
-    context.fill();
   } else {
     context.fillStyle = '#ffffff';
     context.beginPath();
