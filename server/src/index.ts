@@ -35,6 +35,7 @@ type Room = {
   players: Map<string, Player>;
   results: Player[];
   inputs: Map<string, PlayerInput>;
+  processedItemRequests: Map<string, number>;
   zombies: Zombie[];
   resources: ResourceNode[];
   facilities: Facility[];
@@ -100,7 +101,7 @@ const UPGRADE_POOL: Array<Omit<UpgradeOption, 'id'>> = [
   { type: 'maxHp', title: '응급 체력', description: '최대 체력이 15 증가하고 즉시 조금 회복합니다.' },
   { type: 'moveSpeed', title: '동선 숙달', description: '이동 속도가 6% 증가합니다.' },
   { type: 'medKit', title: '응급 처치', description: '구급 회복량과 획득 점수가 증가합니다.' },
-  { type: 'partition', title: '파티션 전개', description: '파티션 바리케이드 내구도가 증가합니다.' }
+  { type: 'partition', title: '파티션 전개', description: '파티션 바리케이드 길이와 내구도가 증가합니다.' }
 ];
 
 const rooms = new Map<string, Room>();
@@ -138,6 +139,7 @@ function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string
     players: new Map(),
     results: [],
     inputs: new Map(),
+    processedItemRequests: new Map(),
     zombies: [],
     resources: [],
     facilities: [],
@@ -310,6 +312,7 @@ function startGame(room: Room) {
   room.nextReliefSupplyAt = 18;
   clearZombieAiTimers(room);
   room.zombies = [];
+  room.processedItemRequests = new Map();
   room.projectiles = [];
   room.facilities = [];
   room.powerZones = [];
@@ -355,6 +358,7 @@ function endGame(room: Room) {
 
 function tickRoom(room: Room) {
   if (room.phase === 'lobby') return;
+  if (room.phase === 'paused') return;
 
   if (room.phase === 'countdown') {
     room.countdown -= DT;
@@ -399,7 +403,7 @@ function updatePlayers(room: Room, elapsed: number) {
     if (!player.alive) continue;
     refreshCombo(room, player);
 
-    if (input.useItem) useItem(room, player, input.useItem);
+    if (input.useItem) processItemUseInput(room, player, input);
 
     if (input.shooting && canAct(room, player.id, 'shoot', player.combo >= 5 ? 0.44 : 0.52)) {
       const attackRange = playerAttackRange(room, player);
@@ -442,6 +446,19 @@ function meleeAttack(room: Room, player: Player) {
       damagePlayer(room, target, 20 + comboDamageBonus(player), player);
     }
   }
+}
+
+function processItemUseInput(room: Room, player: Player, input: PlayerInput) {
+  if (!input.useItem) return;
+  const requestId = input.useItemRequestId;
+  if (requestId === undefined) {
+    useItem(room, player, input.useItem);
+    return;
+  }
+  const previous = room.processedItemRequests.get(player.id) ?? 0;
+  if (requestId <= previous) return;
+  room.processedItemRequests.set(player.id, requestId);
+  useItem(room, player, input.useItem);
 }
 
 function useItem(room: Room, player: Player, type: ResourceType) {
@@ -767,25 +784,27 @@ function applyUpgrade(room: Room, player: Player, type: UpgradeType) {
 }
 
 function deployPartitionBarricades(room: Room, player: Player) {
-  const distanceFromPlayer = 74;
-  const offsets: Vec2[] = [
-    { x: 0, y: -distanceFromPlayer },
-    { x: distanceFromPlayer, y: 0 },
-    { x: 0, y: distanceFromPlayer },
-    { x: -distanceFromPlayer, y: 0 }
-  ];
-  const hp = 95 + player.upgrades.partition * 35;
-  for (const offset of offsets) {
-    const position = clampToMap({ x: player.position.x + offset.x, y: player.position.y + offset.y }, FACILITY_RADIUS);
-    if (collidesWithWalls(position, FACILITY_RADIUS, room.walls) || collidesWithFacilities(room, position, FACILITY_RADIUS)) continue;
-    room.facilities.push({
-      id: makeId('facility'),
-      type: 'partitionBarricade',
-      ownerId: player.id,
-      hp,
-      position
-    });
-  }
+  const forward = length(player.aim) > 0 ? normalize(player.aim) : { x: 1, y: 0 };
+  const horizontalAim = Math.abs(forward.x) >= Math.abs(forward.y);
+  const level = player.upgrades.partition;
+  const width = horizontalAim ? 26 : 118 + level * 18;
+  const height = horizontalAim ? 118 + level * 18 : 26;
+  const forwardDistance = (horizontalAim ? width : height) / 2 + 54;
+  const position = clampToMap({
+    x: player.position.x + (horizontalAim ? Math.sign(forward.x || 1) * forwardDistance : 0),
+    y: player.position.y + (horizontalAim ? 0 : Math.sign(forward.y || 1) * forwardDistance)
+  }, Math.max(width, height) / 2);
+  const footprint = facilityRect({ position, width, height });
+  if (rectCollidesWithWalls(footprint, room.walls) || rectCollidesWithFacilities(room, footprint)) return;
+  room.facilities.push({
+    id: makeId('facility'),
+    type: 'partitionBarricade',
+    ownerId: player.id,
+    hp: 155 + level * 45,
+    position,
+    width,
+    height
+  });
 }
 
 function spawnWorld(room: Room, elapsed: number) {
@@ -1108,7 +1127,7 @@ function moveZombieAroundWalls(room: Room, zombie: Zombie, desired: Vec2, target
         x: zombie.position.x + candidate.x * step,
         y: zombie.position.y + candidate.y * step
       }, ZOMBIE_RADIUS);
-      const blocked = collidesWithWalls(point, ZOMBIE_RADIUS, room.walls);
+      const blocked = collidesWithWalls(point, ZOMBIE_RADIUS, room.walls) || collidesWithFacilities(room, point, ZOMBIE_RADIUS);
       const goalDistance = distance(point, targetPoint);
       const alignment = candidate.x * desired.x + candidate.y * desired.y;
       return { point, blocked, score: goalDistance - alignment * 18 };
@@ -1147,7 +1166,7 @@ function moveZombieWithPatterns(room: Room, zombie: Zombie, desired: Vec2, targe
       x: zombie.position.x + state.dashDirection.x * speed * 2.5 * DT,
       y: zombie.position.y + state.dashDirection.y * speed * 2.5 * DT
     }, ZOMBIE_RADIUS);
-    if (!collidesWithWalls(dashPoint, ZOMBIE_RADIUS, room.walls)) return dashPoint;
+    if (!collidesWithWalls(dashPoint, ZOMBIE_RADIUS, room.walls) && !collidesWithFacilities(room, dashPoint, ZOMBIE_RADIUS)) return dashPoint;
     state.dashUntil = 0;
   }
 
@@ -1249,8 +1268,35 @@ function rectCenter(wall: Wall): Vec2 {
 function collidesWithFacilities(room: Room, point: Vec2, radius: number) {
   return room.facilities.some((facility) => {
     if (facility.type === 'medStation') return false;
+    if (facility.width && facility.height) return circleRect(point, radius, facilityRect(facility));
     return distance(point, facility.position) < radius + FACILITY_RADIUS;
   });
+}
+
+function rectCollidesWithFacilities(room: Room, rect: Wall) {
+  return room.facilities.some((facility) => {
+    if (facility.type === 'medStation') return false;
+    return rectsOverlap(rect, facilityRect(facility));
+  });
+}
+
+function rectCollidesWithWalls(rect: Wall, activeWalls = walls) {
+  return activeWalls.some((wall) => rectsOverlap(rect, wall));
+}
+
+function facilityRect(facility: Pick<Facility, 'position' | 'width' | 'height'>): Wall {
+  const width = facility.width ?? FACILITY_RADIUS * 2;
+  const height = facility.height ?? FACILITY_RADIUS * 2;
+  return {
+    x: facility.position.x - width / 2,
+    y: facility.position.y - height / 2,
+    width,
+    height
+  };
+}
+
+function rectsOverlap(a: Wall, b: Wall) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
 
 function circleRect(point: Vec2, radius: number, rect: Wall) {
@@ -1324,6 +1370,30 @@ io.on('connection', (socket) => {
     broadcast(room);
   });
 
+  socket.on('pauseGame', (paused) => {
+    const room = getSocketRoom(socket.id);
+    const player = room?.players.get(socket.id);
+    if (!room || !player?.host) return;
+    if (paused && room.phase === 'playing') {
+      room.phase = 'paused';
+      broadcast(room);
+      return;
+    }
+    if (!paused && room.phase === 'paused') {
+      room.phase = 'playing';
+      broadcast(room);
+    }
+  });
+
+  socket.on('restartGame', () => {
+    const room = getSocketRoom(socket.id);
+    const player = room?.players.get(socket.id);
+    if (!room || !player?.host || room.phase !== 'ended') return;
+    for (const candidate of room.players.values()) candidate.ready = false;
+    startCountdown(room);
+    broadcast(room);
+  });
+
   socket.on('input', (input) => {
     const room = getSocketRoom(socket.id);
     if (!room || room.phase !== 'playing') return;
@@ -1347,6 +1417,7 @@ function leave(socketId: string) {
   clearFeedbackTimers(room, socketId);
   room.players.delete(socketId);
   room.inputs.delete(socketId);
+  room.processedItemRequests.delete(socketId);
   socketRooms.delete(socketId);
   const nextHost = room.players.values().next().value as Player | undefined;
   if (nextHost) nextHost.host = true;

@@ -39,6 +39,7 @@ const SPRITES = {
 const WALK_FRAME_COUNT = 4;
 const MOVEMENT_HOLD_MS = 180;
 const INPUT_SEND_MS = 16;
+const ITEM_INPUT_HOLD_MS = 220;
 const CAMERA_FOLLOW_AMOUNT = 0.62;
 const LOCAL_PLAYER_FOLLOW_AMOUNT = 0.84;
 const REMOTE_ENTITY_FOLLOW_AMOUNT = 0.36;
@@ -340,7 +341,10 @@ function LobbyApp() {
               </div>
             ))}
           </div>
-          <button onClick={() => window.location.reload()}>처음으로 돌아가기</button>
+          <div className="result-actions">
+            {me.host && <button className="primary" onClick={() => socket.emit('restartGame')}>같은 방 다시하기</button>}
+            <button onClick={leaveRoom}>로비로 나가기</button>
+          </div>
         </section>
       </main>
     );
@@ -364,7 +368,7 @@ function GameGuideModal({ onClose }: { onClose: () => void }) {
           </article>
           <article>
             <strong>아이템</strong>
-            <p>책상은 사거리를 늘리고, 파티션은 사방 바리케이드를 전개합니다. 구급과 파티션은 직접 사용해야 합니다.</p>
+            <p>책상은 사거리를 늘리고, 파티션은 조준 방향에 가로/세로 바리케이드를 전개합니다. 구급과 파티션은 직접 사용해야 합니다.</p>
           </article>
           <article>
             <strong>조작</strong>
@@ -467,7 +471,9 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
   const [touchControlSide, setTouchControlSide] = useState<TouchControlSide>(() => readTouchControlSide());
   const [touchControlOpen, setTouchControlOpen] = useState(false);
-  const queuedItem = useRef<ResourceType | undefined>(undefined);
+  const [upgradePanelOpen, setUpgradePanelOpen] = useState(false);
+  const queuedItem = useRef<{ type: ResourceType; requestId: number; until: number } | null>(null);
+  const itemRequestSeq = useRef(0);
   const seenFeedback = useRef(new Set<string>());
   const visualEffects = useRef<VisualEffect[]>([]);
   const latestInputState = useRef<{ snapshot: GameSnapshot; me?: GameSnapshot['players'][number] }>({ snapshot });
@@ -485,24 +491,36 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     const canFight = Boolean(currentMe?.alive);
     const autoAim = canFight && currentMe ? getAutoAim(current.snapshot, currentMe) : undefined;
     const aim = autoAim ? autoAim.direction : pointer.current;
-    const useItem = canFight ? queuedItem.current : undefined;
-    queuedItem.current = undefined;
+    const now = performance.now();
+    if (!canFight || (queuedItem.current && queuedItem.current.until < now)) queuedItem.current = null;
+    const useItemRequest = canFight ? queuedItem.current : null;
     const input: PlayerInput = {
       move,
       aim,
       shooting: Boolean(canFight && autoAim && currentMe && autoAim.distance <= playerAttackRange(current.snapshot, currentMe)),
       melee: false,
-      useItem
+      useItem: useItemRequest?.type,
+      useItemRequestId: useItemRequest?.requestId
     };
     socket.emit('input', input);
   }, []);
+
+  const queueItemUse = useCallback((type: ResourceType) => {
+    itemRequestSeq.current += 1;
+    queuedItem.current = {
+      type,
+      requestId: itemRequestSeq.current,
+      until: performance.now() + ITEM_INPUT_HOLD_MS
+    };
+    sendInput();
+  }, [sendInput]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       audio.current.unlock();
       pressed.current.add(event.code);
-      if (event.code === 'KeyQ') queuedItem.current = 'medKit';
-      if (event.code === 'KeyE') queuedItem.current = 'partitionMaterial';
+      if (!event.repeat && event.code === 'KeyQ') queueItemUse('medKit');
+      if (!event.repeat && event.code === 'KeyE') queueItemUse('partitionMaterial');
       sendInput();
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -515,7 +533,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [sendInput]);
+  }, [queueItemUse, sendInput]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -528,6 +546,10 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     writeTouchControlSide(touchControlSide);
     joystick.current = null;
   }, [touchControlSide]);
+
+  useEffect(() => {
+    if ((me?.pendingUpgradeChoices.length ?? 0) === 0) setUpgradePanelOpen(false);
+  }, [me?.pendingUpgradeChoices.length]);
 
   useEffect(() => {
     if (me) latestRender.current = { snapshot, me };
@@ -665,8 +687,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
               disabled={count <= 0 || isSpectating}
               onClick={() => {
                 if (isSpectating) return;
-                queuedItem.current = resource;
-                sendInput();
+                queueItemUse(resource);
               }}
             >
               <i
@@ -682,15 +703,28 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           );
         })}
       </section>
-      {pendingChoices.length > 0 && !isSpectating && (
+      {pendingChoices.length > 0 && !isSpectating && !upgradePanelOpen && (
+        <button type="button" className="hud upgrade-pending-button" onClick={() => setUpgradePanelOpen(true)}>
+          <strong>업그레이드</strong>
+          <span>{pendingUpgradeCount > 1 ? `${pendingUpgradeCount}개 대기` : `Lv ${me?.level}`}</span>
+        </button>
+      )}
+      {pendingChoices.length > 0 && !isSpectating && upgradePanelOpen && (
         <section className="hud upgrade-choice-hud" aria-label="레벨업 업그레이드 선택">
           <div className="upgrade-choice-title">
             <strong>Lv {me?.level} 업그레이드</strong>
-            <span>{pendingUpgradeCount > 1 ? `${pendingUpgradeCount}개 대기` : '선택 대기'}</span>
+            <button type="button" onClick={() => setUpgradePanelOpen(false)}>접기</button>
           </div>
           <div className="upgrade-choice-list">
             {pendingChoices.map((upgrade) => (
-              <button key={upgrade.id} type="button" onClick={() => socket.emit('chooseUpgrade', upgrade.id)}>
+              <button
+                key={upgrade.id}
+                type="button"
+                onClick={() => {
+                  socket.emit('chooseUpgrade', upgrade.id);
+                  setUpgradePanelOpen(false);
+                }}
+              >
                 <strong>{upgrade.title}</strong>
                 <span>{upgrade.description}</span>
               </button>
@@ -706,6 +740,21 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         <span className={`threat ${threat.tone}`}>위협 {threat.label}</span>
         <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP 켜짐' : 'PVP 꺼짐'}</span>
       </section>
+      {me?.host && (
+        <button
+          type="button"
+          className="hud pause-button"
+          onClick={() => socket.emit('pauseGame', snapshot.phase !== 'paused')}
+        >
+          {snapshot.phase === 'paused' ? '재개' : '일시정지'}
+        </button>
+      )}
+      {snapshot.phase === 'paused' && (
+        <div className="pause-overlay">
+          <strong>일시정지</strong>
+          <span>{me?.host ? '재개 버튼으로 게임을 이어갈 수 있습니다.' : '방장이 게임을 멈췄습니다.'}</span>
+        </div>
+      )}
       <div className="touch-control-menu">
         <button
           type="button"
@@ -972,9 +1021,11 @@ function drawGame(
     drawPowerZone(context, zone);
   }
   for (const facility of snapshot.facilities) {
-    drawWorldFacility(context, propAtlas, facility.type, facility.position);
+    drawWorldFacility(context, propAtlas, facility);
+    const hpBarWidth = Math.max(48, (facility.width ?? 48) * 0.72);
+    const hpBarTop = facility.position.y - (facility.height ?? 56) / 2 - 9;
     context.fillStyle = 'rgba(255,255,255,0.35)';
-    context.fillRect(facility.position.x - 24, facility.position.y - 25, Math.max(0, facility.hp / 160) * 48, 4);
+    context.fillRect(facility.position.x - hpBarWidth / 2, hpBarTop, Math.max(0, facility.hp / 220) * hpBarWidth, 4);
   }
   for (const projectile of snapshot.projectiles) {
     drawProjectile(context, projectile);
@@ -1235,9 +1286,13 @@ function drawWorldResource(
 function drawWorldFacility(
   context: CanvasRenderingContext2D,
   propAtlas: HTMLImageElement | null,
-  type: FacilityType,
-  position: Vec2
+  facility: GameSnapshot['facilities'][number]
 ) {
+  const { type, position } = facility;
+  if (type === 'partitionBarricade' && facility.width && facility.height) {
+    drawPartitionBarrier(context, position, facility.width, facility.height);
+    return;
+  }
   const sprite = FACILITY_SPRITES[type];
   const size = sprite.size * 1.72;
 
@@ -1254,6 +1309,45 @@ function drawWorldFacility(
   } else {
     drawFacilityNode(context, type, position);
   }
+  context.restore();
+}
+
+function drawPartitionBarrier(context: CanvasRenderingContext2D, position: Vec2, width: number, height: number) {
+  const left = position.x - width / 2;
+  const top = position.y - height / 2;
+  const vertical = height > width;
+  const seamCount = Math.max(2, Math.floor((vertical ? height : width) / 34));
+
+  context.save();
+  drawGroundBlob(context, position, Math.max(width, height) * 0.94, 'rgba(20,31,30,0.2)');
+  context.fillStyle = '#a7debd';
+  context.strokeStyle = 'rgba(23,59,63,0.46)';
+  context.lineWidth = 3;
+  context.beginPath();
+  context.roundRect(left, top, width, height, 6);
+  context.fill();
+  context.stroke();
+
+  context.strokeStyle = 'rgba(23,59,63,0.28)';
+  context.lineWidth = 2;
+  for (let i = 1; i < seamCount; i += 1) {
+    context.beginPath();
+    if (vertical) {
+      const y = top + (height / seamCount) * i;
+      context.moveTo(left + 4, y);
+      context.lineTo(left + width - 4, y);
+    } else {
+      const x = left + (width / seamCount) * i;
+      context.moveTo(x, top + 4);
+      context.lineTo(x, top + height - 4);
+    }
+    context.stroke();
+  }
+
+  context.fillStyle = 'rgba(247,251,250,0.42)';
+  context.beginPath();
+  context.roundRect(left + 5, top + 5, Math.max(4, width - 10), Math.max(4, Math.min(8, height - 10)), 3);
+  context.fill();
   context.restore();
 }
 

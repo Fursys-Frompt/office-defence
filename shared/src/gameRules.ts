@@ -21,7 +21,7 @@ export const EQUIPMENT_LABELS: Record<ResourceType, string> = {
 export const EQUIPMENT_DESCRIPTIONS: Record<ResourceType, string> = {
   chairParts: '주변 적을 밀어내고 피해를 줍니다.',
   deskParts: '공격 사거리와 자동 공격 빈도를 높입니다.',
-  partitionMaterial: '사용 시 사방에 임시 바리케이드를 전개합니다.',
+  partitionMaterial: '사용 시 조준 방향에 가로/세로 임시 바리케이드를 전개합니다.',
   medKit: '사용 시 체력을 회복합니다.'
 };
 

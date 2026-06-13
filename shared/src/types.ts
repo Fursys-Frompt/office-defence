@@ -1,4 +1,4 @@
-export type GamePhase = 'lobby' | 'countdown' | 'playing' | 'ended';
+export type GamePhase = 'lobby' | 'countdown' | 'playing' | 'paused' | 'ended';
 export type ZombieType = 'normal' | 'runner' | 'tanker';
 export type ResourceType = 'chairParts' | 'deskParts' | 'partitionMaterial' | 'medKit';
 export type FacilityType = 'partitionBarricade' | 'deskBarricade' | 'medStation';
@@ -31,6 +31,7 @@ export type PlayerInput = {
   shooting: boolean;
   melee: boolean;
   useItem?: ResourceType;
+  useItemRequestId?: number;
   build?: FacilityType;
 };
 
@@ -78,6 +79,8 @@ export type Facility = {
   ownerId: string;
   hp: number;
   position: Vec2;
+  width?: number;
+  height?: number;
 };
 
 export type PowerZone = {
@@ -168,6 +171,8 @@ export type ClientToServerEvents = {
   setReady: (ready: boolean) => void;
   updateSettings: (settings: RoomSettings) => void;
   chooseUpgrade: (upgradeId: string) => void;
+  pauseGame: (paused: boolean) => void;
+  restartGame: () => void;
   input: (input: PlayerInput) => void;
   leaveRoom: () => void;
 };
