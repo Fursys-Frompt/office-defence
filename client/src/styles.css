@@ -271,8 +271,9 @@ h1 {
 
 .avatar-picker {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(68px, 78px));
   gap: 10px;
+  justify-content: center;
 }
 
 .avatar-option {
@@ -291,6 +292,7 @@ h1 {
 }
 
 .avatar-thumb {
+  display: block;
   width: 64px;
   height: 64px;
   background-repeat: no-repeat;
@@ -310,6 +312,7 @@ h1 {
 }
 
 .avatar-preview-image {
+  display: block;
   width: 128px;
   height: 128px;
   background-repeat: no-repeat;
@@ -449,10 +452,15 @@ canvas {
   touch-action: none;
 }
 
+.touch-joystick-zone {
+  display: none;
+}
+
 .hud,
 .build-bar,
 .equipment-bar {
   position: absolute;
+  z-index: 2;
   display: flex;
   gap: 8px;
   align-items: center;
@@ -770,6 +778,33 @@ canvas {
   font-weight: 900;
 }
 
+.upgrade-defer-button {
+  min-height: 30px;
+  padding: 0 9px;
+  background: rgba(15, 139, 141, 0.12);
+  border-color: rgba(15, 139, 141, 0.2);
+  color: #0f6f72;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.upgrade-defer-button:hover,
+.upgrade-defer-button:focus-visible {
+  background: rgba(15, 139, 141, 0.2);
+  box-shadow: none;
+}
+
+.upgrade-choice-collapsed {
+  min-height: 48px;
+  justify-content: space-between;
+  color: #17211d;
+}
+
+.upgrade-choice-collapsed span {
+  color: #0f6f72;
+  font-weight: 900;
+}
+
 .upgrade-choice-list {
   display: grid;
   gap: 8px;
@@ -1059,6 +1094,27 @@ canvas {
 
   .pause-overlay strong {
     font-size: 42px;
+  }
+
+  .touch-joystick-zone {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 1;
+    display: block;
+    width: 50%;
+    touch-action: none;
+  }
+
+  .game.joystick-right .touch-joystick-zone {
+    right: 0;
+    left: auto;
+  }
+
+  .player-hud,
+  .inventory-hud,
+  .equipment-bar,
+  .touch-affordance {
+    pointer-events: none;
   }
 
   .inventory-hud {

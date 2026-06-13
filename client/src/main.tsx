@@ -480,6 +480,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
   const [touchControlSide, setTouchControlSide] = useState<TouchControlSide>(() => readTouchControlSide());
   const [touchControlOpen, setTouchControlOpen] = useState(false);
+  const [upgradeChoicesOpen, setUpgradeChoicesOpen] = useState(true);
   const [selectedInstallItem, setSelectedInstallItem] = useState<InstallItem | null>(null);
   const selectedInstallItemRef = useRef<InstallItem | null>(null);
   const queuedItem = useRef<{ type: ResourceType; requestId: number; until: number; aim?: Vec2 } | null>(null);
@@ -658,6 +659,15 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const isSpectating = Boolean(me && !me.alive);
   const pendingChoices = me?.pendingUpgradeChoices ?? [];
   const pendingUpgradeCount = me?.pendingUpgradeCount ?? 0;
+  const pendingChoiceKey = pendingChoices.map((choice) => choice.id).join('|');
+
+  useEffect(() => {
+    if (pendingChoices.length > 0) setUpgradeChoicesOpen(true);
+  }, [pendingChoiceKey, pendingChoices.length]);
+
+  const chooseUpgrade = useCallback((upgradeId: string) => {
+    socket.emit('chooseUpgrade', upgradeId);
+  }, []);
 
   return (
     <main className={`game joystick-${touchControlSide}`}>
@@ -677,7 +687,6 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         }}
         onTouchStart={(event) => {
           handleTouch(event, joystick, touchControlSide);
-          if (selectedInstallItemRef.current === 'partitionMaterial') confirmPartitionInstall();
           sendInput();
         }}
         onTouchMove={(event) => {
@@ -688,6 +697,26 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           handleTouch(event, joystick, touchControlSide);
           sendInput();
         }}
+      />
+      <div
+        className="touch-joystick-zone"
+        onTouchStart={(event) => {
+          handleTouch(event, joystick, 'all');
+          sendInput();
+        }}
+        onTouchMove={(event) => {
+          handleTouch(event, joystick, 'all');
+          sendInput();
+        }}
+        onTouchEnd={(event) => {
+          handleTouch(event, joystick, 'all');
+          sendInput();
+        }}
+        onTouchCancel={(event) => {
+          handleTouch(event, joystick, 'all');
+          sendInput();
+        }}
+        aria-hidden="true"
       />
       <div className={!isSpectating && hpPercent <= 30 ? 'damage-vignette visible' : 'damage-vignette'} />
       <section className={`hud player-hud top-left ${hpPercent <= 30 && !isSpectating ? 'danger' : ''} ${isSpectating ? 'spectating' : ''}`}>
@@ -750,20 +779,39 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           );
         })}
       </section>
-      {pendingChoices.length > 0 && !isSpectating && (
+      {pendingChoices.length > 0 && !isSpectating && !upgradeChoicesOpen && (
+        <button
+          type="button"
+          className="hud upgrade-choice-hud upgrade-choice-collapsed"
+          onClick={() => setUpgradeChoicesOpen(true)}
+        >
+          <strong>Lv {me?.level} 업그레이드</strong>
+          <span>{pendingUpgradeCount > 1 ? `${pendingUpgradeCount}개 대기` : '선택 대기'}</span>
+        </button>
+      )}
+      {pendingChoices.length > 0 && !isSpectating && upgradeChoicesOpen && (
         <section className="hud upgrade-choice-hud" aria-label="레벨업 업그레이드 선택">
           <div className="upgrade-choice-title">
             <strong>Lv {me?.level} 업그레이드</strong>
-            <span>{pendingUpgradeCount > 1 ? `${pendingUpgradeCount}개 대기` : '선택 대기'}</span>
+            <button
+              type="button"
+              className="upgrade-defer-button"
+              onClick={() => setUpgradeChoicesOpen(false)}
+            >
+              {pendingUpgradeCount > 1 ? `${pendingUpgradeCount}개 대기` : '선택 대기'}
+            </button>
           </div>
           <div className="upgrade-choice-list">
             {pendingChoices.map((upgrade) => (
               <button
                 key={upgrade.id}
                 type="button"
-                onClick={() => {
-                  socket.emit('chooseUpgrade', upgrade.id);
+                onTouchStart={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  chooseUpgrade(upgrade.id);
                 }}
+                onClick={() => chooseUpgrade(upgrade.id)}
               >
                 <strong>{upgrade.title}</strong>
                 <span>{upgrade.description}</span>
@@ -916,17 +964,18 @@ function avatarSelectionSpriteStyle(avatar: (typeof AVATARS)[number], displaySiz
 }
 
 function handleTouch(
-  event: React.TouchEvent<HTMLCanvasElement>,
+  event: React.TouchEvent<HTMLElement>,
   joystick: React.MutableRefObject<{ id: number; origin: Vec2; value: Vec2 } | null>,
-  side: TouchControlSide
+  side: TouchControlSide | 'all'
 ) {
   createAudioEngine().unlock();
   event.preventDefault();
   const rect = event.currentTarget.getBoundingClientRect();
   const touches = Array.from(event.touches);
   const joystickTouch = touches.find((touch) => {
+    if (side === 'all') return true;
     const x = touch.clientX - rect.left;
-    return side === 'left' ? x < rect.width * 0.7 : x > rect.width * 0.3;
+    return side === 'left' ? x <= rect.width / 2 : x >= rect.width / 2;
   });
   if (!joystickTouch) {
     joystick.current = null;
