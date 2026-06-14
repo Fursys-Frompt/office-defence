@@ -5,6 +5,7 @@ import type {
   ClientToServerEvents,
   FacilityType,
   FeedbackEvent,
+  GameMode,
   GameSnapshot,
   PlayerInput,
   ResourceType,
@@ -38,6 +39,16 @@ type InstallItem = Extract<ResourceType, 'partitionMaterial'>;
 
 const socket: GameSocket = io();
 const TOUCH_CONTROL_SIDE_KEY = 'zombie-office-survival.touchControlSide';
+const GAME_MODE_LABELS: Record<GameMode, string> = {
+  timedSurvival: '제한시간 생존',
+  endless: '무제한',
+  killTarget: '좀비 처치'
+};
+const GAME_MODE_MAP_LABELS: Record<GameMode, string> = {
+  timedSurvival: '분할 사무실',
+  endless: '순환 복도',
+  killTarget: '중앙 교전 구역'
+};
 const SPRITES = {
   player: { row: 0, size: 74, shadow: 30, frameMs: 130 },
   normal: { row: 1, size: 74, shadow: 32, frameMs: 150 },
@@ -127,7 +138,9 @@ function LobbyApp() {
   const settingsRoomRef = useRef('');
   const [settings, setSettings] = useState<RoomSettings>({
     maxPlayers: 6,
+    gameMode: 'timedSurvival',
     gameDurationSec: 180,
+    killTarget: 100,
     pvpEnabled: false
   });
 
@@ -166,6 +179,11 @@ function LobbyApp() {
   const me = snapshot?.players.find((player) => player.id === playerId);
   const readyCount = snapshot?.players.filter((player) => player.ready).length ?? 0;
 
+  const updateRoomSettings = (nextSettings: RoomSettings) => {
+    setSettings(nextSettings);
+    if (snapshot?.phase === 'lobby' && me?.host) socket.emit('updateSettings', nextSettings);
+  };
+
   const openJoinModal = (nextRoomId?: string) => {
     setError('');
     setPendingAction({ mode: 'join', roomId: nextRoomId });
@@ -177,7 +195,8 @@ function LobbyApp() {
       nickname: nickname.trim() || '생존자',
       roomId: pendingAction.mode === 'join' ? pendingAction.roomId : undefined,
       roomTitle: pendingAction.mode === 'create' ? roomTitle : undefined,
-      avatarId
+      avatarId,
+      settings: pendingAction.mode === 'create' ? settings : undefined
     });
   };
 
@@ -241,7 +260,8 @@ function LobbyApp() {
                       <em>코드 {room.roomId} · 방장 {room.hostNickname}</em>
                     </span>
                     <span>{room.playerCount}/{room.maxPlayers}</span>
-                    <span>{Math.round(room.gameDurationSec / 60)}분</span>
+                    <span>{GAME_MODE_LABELS[room.gameMode]}</span>
+                    <span>{room.gameMode === 'endless' ? '무제한' : room.gameMode === 'killTarget' ? `${room.killTarget}킬` : `${Math.round(room.gameDurationSec / 60)}분`}</span>
                     <span className={room.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{room.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
                   </button>
                 );
@@ -282,7 +302,9 @@ function LobbyApp() {
                 <span>코드 {roomId}</span>
                 <span>참가 {snapshot.players.length}/{snapshot.settings.maxPlayers}</span>
                 <span>준비 {readyCount}/{snapshot.players.length}</span>
-                <span>{Math.round(snapshot.settings.gameDurationSec / 60)}분</span>
+                <span>{GAME_MODE_LABELS[snapshot.settings.gameMode]}</span>
+                <span>맵 {snapshot.map.name}</span>
+                <span>{snapshot.settings.gameMode === 'endless' ? '무제한' : snapshot.settings.gameMode === 'killTarget' ? `${snapshot.settings.killTarget}킬` : `${Math.round(snapshot.settings.gameDurationSec / 60)}분`}</span>
                 <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
               </div>
             </div>
@@ -305,9 +327,25 @@ function LobbyApp() {
                   min={2}
                   max={8}
                   value={settings.maxPlayers}
-                  onChange={(event) => setSettings({ ...settings, maxPlayers: Number(event.target.value) })}
+                  onChange={(event) => updateRoomSettings({ ...settings, maxPlayers: Number(event.target.value) })}
                 />
               </label>
+              <label>
+                게임 모드
+                <select
+                  value={settings.gameMode}
+                  onChange={(event) => updateRoomSettings({ ...settings, gameMode: event.target.value as GameMode })}
+                >
+                  <option value="timedSurvival">제한시간 생존</option>
+                  <option value="endless">무제한</option>
+                  <option value="killTarget">좀비 N마리 처치</option>
+                </select>
+              </label>
+              <label>
+                맵 구조
+                <input value={GAME_MODE_MAP_LABELS[settings.gameMode]} readOnly />
+              </label>
+              {settings.gameMode === 'timedSurvival' && (
               <label>
                 플레이 시간(초)
                 <input
@@ -316,18 +354,32 @@ function LobbyApp() {
                   max={600}
                   step={30}
                   value={settings.gameDurationSec}
-                  onChange={(event) => setSettings({ ...settings, gameDurationSec: Number(event.target.value) })}
+                  onChange={(event) => updateRoomSettings({ ...settings, gameDurationSec: Number(event.target.value) })}
                 />
               </label>
+              )}
+              {settings.gameMode === 'killTarget' && (
+              <label>
+                목표 처치 수
+                <input
+                  type="number"
+                  min={10}
+                  max={1000}
+                  step={10}
+                  value={settings.killTarget}
+                  onChange={(event) => updateRoomSettings({ ...settings, killTarget: Number(event.target.value) })}
+                />
+              </label>
+              )}
               <label className="toggle">
                 <input
                   type="checkbox"
                   checked={settings.pvpEnabled}
-                  onChange={(event) => setSettings({ ...settings, pvpEnabled: event.target.checked })}
+                  onChange={(event) => updateRoomSettings({ ...settings, pvpEnabled: event.target.checked })}
                 />
                 PVP 허용
               </label>
-              <button onClick={() => socket.emit('updateSettings', settings)}>설정 적용</button>
+              <button onClick={() => socket.emit('updateSettings', settings)}>설정 다시 동기화</button>
             </div>
           )}
           <button className="primary" onClick={() => socket.emit('setReady', !me.ready)}>
@@ -340,11 +392,13 @@ function LobbyApp() {
 
   if (snapshot.phase === 'ended') {
     const ranking = [...(snapshot.results.length > 0 ? snapshot.results : snapshot.players)].sort((a, b) => b.score - a.score);
+    const objective = snapshot.objective;
     return (
       <main className="shell result">
         <section className="panel">
           <p className="eyebrow">Game Result</p>
-          <h1>생존 순위</h1>
+          <h1>{objective.failed ? '작전 실패' : objective.completed ? '목표 달성' : '생존 순위'}</h1>
+          <p className="result-objective">{objectiveSummary(objective)}</p>
           <div className="ranking">
             {ranking.map((player, index) => (
               <div key={player.id} className="rank-row">
@@ -379,7 +433,7 @@ function GameGuideModal({ onClose }: { onClose: () => void }) {
         <div className="guide-grid">
           <article>
             <strong>목표</strong>
-            <p>제한 시간 동안 좀비를 막고 점수를 올립니다. 모든 플레이어가 쓰러지면 실패합니다.</p>
+            <p>방장이 선택한 모드에 따라 제한시간 생존, 무제한 생존, 팀 처치 목표가 적용됩니다. 모드마다 맵 구조가 달라집니다.</p>
           </article>
           <article>
             <strong>아이템</strong>
@@ -397,6 +451,20 @@ function GameGuideModal({ onClose }: { onClose: () => void }) {
       </section>
     </div>
   );
+}
+
+function objectiveSummary(objective: GameSnapshot['objective']) {
+  if (objective.mode === 'endless') return formatDuration(objective.current);
+  if (objective.target === undefined) return `${objective.current}`;
+  if (objective.mode === 'killTarget') return `${objective.current}/${objective.target}킬`;
+  return `${objective.current}/${objective.target}초`;
+}
+
+function formatDuration(seconds: number) {
+  const whole = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(whole / 60);
+  const remainder = whole % 60;
+  return `${minutes}:${String(remainder).padStart(2, '0')}`;
 }
 
 function ProfileModal({
@@ -838,8 +906,9 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         </section>
       )}
       <section className="hud mission-hud top-right">
-        <span><b>{snapshot.remainingSec}</b>초</span>
+        <span className="objective-chip"><strong>{snapshot.objective.label}</strong> {objectiveSummary(snapshot.objective)}</span>
         <span>웨이브 <b>{snapshot.wave}</b></span>
+        <span>경과 <b>{formatDuration(snapshot.elapsedSec)}</b></span>
         <span>Lv <b>{me?.level ?? 1}</b></span>
         <span>다음 {me ? Math.max(0, me.nextLevelKills - me.kills) : 0}킬</span>
         <span className={`threat ${threat.tone}`}>위협 {threat.label}</span>
@@ -1140,7 +1209,7 @@ function drawGame(
   context.save();
   context.translate(width / 2 - camera.x, height / 2 - camera.y);
 
-  drawOfficeFloor(context, snapshot.map.width, snapshot.map.height, propAtlas);
+  drawOfficeFloor(context, snapshot.map, propAtlas);
   for (const wall of snapshot.walls) {
     drawWall(context, wall);
   }
@@ -2213,14 +2282,19 @@ function drawWall(context: CanvasRenderingContext2D, wall: { x: number; y: numbe
   context.stroke();
 }
 
-function drawOfficeFloor(
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  propAtlas: HTMLImageElement | null
-) {
-  context.fillStyle = '#dfe7e3';
+function drawOfficeFloor(context: CanvasRenderingContext2D, map: GameSnapshot['map'], propAtlas: HTMLImageElement | null) {
+  const { width, height, theme } = map;
+  context.fillStyle = theme === 'killArena' ? '#e4e0d6' : theme === 'serviceLoop' ? '#d7e3e4' : '#dfe7e3';
   context.fillRect(0, 0, width, height);
+
+  if (theme === 'serviceLoop') {
+    drawServiceLoopFloor(context, width, height, propAtlas);
+    return;
+  }
+  if (theme === 'killArena') {
+    drawKillArenaFloor(context, width, height, propAtlas);
+    return;
+  }
 
   context.fillStyle = 'rgba(255,255,255,0.16)';
   for (let x = 24; x < width; x += 160) {
@@ -2277,6 +2351,108 @@ function drawOfficeFloor(
     for (const decor of DECOR_SPRITES) {
       drawAtlasSprite(context, propAtlas, decor.col, decor.row, 4, 4, decor.position, decor.size);
     }
+  }
+}
+
+function drawServiceLoopFloor(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  propAtlas: HTMLImageElement | null
+) {
+  context.fillStyle = '#d7e3e4';
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = 'rgba(23,59,63,0.08)';
+  context.fillRect(120, 112, width - 240, height - 224);
+  context.fillStyle = 'rgba(247,251,250,0.58)';
+  context.fillRect(260, 250, width - 520, height - 500);
+  context.strokeStyle = 'rgba(15,139,141,0.38)';
+  context.lineWidth = 6;
+  context.setLineDash([36, 26]);
+  context.strokeRect(170, 162, width - 340, height - 324);
+  context.setLineDash([]);
+  context.lineWidth = 1;
+  context.strokeStyle = 'rgba(23,59,63,0.16)';
+  for (let x = 80; x < width; x += 140) {
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, height);
+    context.stroke();
+  }
+  for (let y = 80; y < height; y += 140) {
+    context.beginPath();
+    context.moveTo(0, y);
+    context.lineTo(width, y);
+    context.stroke();
+  }
+  context.fillStyle = 'rgba(255,244,163,0.34)';
+  context.fillRect(70, height / 2 - 52, 180, 104);
+  context.fillRect(width - 250, height / 2 - 52, 180, 104);
+  context.strokeStyle = 'rgba(23,59,63,0.24)';
+  context.lineWidth = 4;
+  context.strokeRect(32, 32, width - 64, height - 64);
+  if (propAtlas) {
+    const decor = [
+      { col: 2, row: 2, position: { x: width / 2, y: 150 }, size: 130 },
+      { col: 3, row: 2, position: { x: width / 2, y: height - 150 }, size: 130 },
+      { col: 0, row: 3, position: { x: 155, y: height / 2 }, size: 112 },
+      { col: 2, row: 3, position: { x: width - 155, y: height / 2 }, size: 112 }
+    ] as const;
+    for (const item of decor) drawAtlasSprite(context, propAtlas, item.col, item.row, 4, 4, item.position, item.size);
+  }
+}
+
+function drawKillArenaFloor(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  propAtlas: HTMLImageElement | null
+) {
+  context.fillStyle = '#e4e0d6';
+  context.fillRect(0, 0, width, height);
+  const center = { x: width / 2, y: height / 2 };
+  const arenaGradient = context.createRadialGradient(center.x, center.y, 80, center.x, center.y, 470);
+  arenaGradient.addColorStop(0, 'rgba(255,244,163,0.34)');
+  arenaGradient.addColorStop(0.58, 'rgba(198,63,63,0.12)');
+  arenaGradient.addColorStop(1, 'rgba(23,59,63,0.05)');
+  context.fillStyle = arenaGradient;
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = 'rgba(198,63,63,0.32)';
+  context.lineWidth = 8;
+  context.beginPath();
+  context.ellipse(center.x, center.y, 310, 230, 0, 0, Math.PI * 2);
+  context.stroke();
+  context.lineWidth = 3;
+  context.strokeStyle = 'rgba(23,59,63,0.22)';
+  for (const gate of [
+    { x: center.x, y: 52, w: 210, h: 72 },
+    { x: width - 52, y: center.y, w: 72, h: 210 },
+    { x: center.x, y: height - 52, w: 210, h: 72 },
+    { x: 52, y: center.y, w: 72, h: 210 }
+  ]) {
+    context.fillStyle = 'rgba(198,63,63,0.16)';
+    context.fillRect(gate.x - gate.w / 2, gate.y - gate.h / 2, gate.w, gate.h);
+    context.strokeRect(gate.x - gate.w / 2, gate.y - gate.h / 2, gate.w, gate.h);
+  }
+  context.strokeStyle = 'rgba(255,255,255,0.28)';
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(center.x, 88);
+  context.lineTo(center.x, height - 88);
+  context.moveTo(88, center.y);
+  context.lineTo(width - 88, center.y);
+  context.stroke();
+  context.strokeStyle = 'rgba(34,59,57,0.24)';
+  context.lineWidth = 4;
+  context.strokeRect(32, 32, width - 64, height - 64);
+  if (propAtlas) {
+    const decor = [
+      { col: 1, row: 2, position: { x: center.x - 230, y: center.y - 180 }, size: 108 },
+      { col: 1, row: 2, position: { x: center.x + 230, y: center.y + 180 }, size: 108 },
+      { col: 3, row: 3, position: { x: center.x - 250, y: center.y + 180 }, size: 86 },
+      { col: 3, row: 3, position: { x: center.x + 250, y: center.y - 180 }, size: 86 }
+    ] as const;
+    for (const item of decor) drawAtlasSprite(context, propAtlas, item.col, item.row, 4, 4, item.position, item.size);
   }
 }
 

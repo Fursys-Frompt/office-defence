@@ -7,9 +7,11 @@ import type {
   ClientToServerEvents,
   Facility,
   FacilityType,
-  GamePhase,
   FeedbackEvent,
+  GameMode,
+  GamePhase,
   GameSnapshot,
+  MapTheme,
   Player,
   PlayerInput,
   ResourceInventory,
@@ -47,6 +49,13 @@ type Room = {
   wave: number;
   countdown: number;
   remainingSec: number;
+  endedElapsedSec: number;
+  map: {
+    width: number;
+    height: number;
+    name: string;
+    theme: MapTheme;
+  };
   startedAt: number;
   lastWaveAt: number;
   nextZombieSpawnAt: number;
@@ -92,8 +101,20 @@ const POWER_ZONE_RANGE_BONUS = 110;
 const ZOMBIE_SPAWN_WARNING_SEC = 1.25;
 const DEFAULT_SETTINGS: RoomSettings = {
   maxPlayers: 6,
+  gameMode: 'timedSurvival',
   gameDurationSec: 180,
+  killTarget: 100,
   pvpEnabled: false
+};
+
+type MapPreset = {
+  name: string;
+  theme: MapTheme;
+  width: number;
+  height: number;
+  walls: Wall[];
+  initialResources: number;
+  resourceLimit: number;
 };
 const DEFAULT_ROOM_TITLE = '생존 방';
 const LEVEL_KILL_THRESHOLDS = [3, 7, 12, 18, 25, 33, 42, 52];
@@ -119,26 +140,92 @@ const zombieAiTimers = new Map<string, {
   leapCooldownUntil: number;
 }>();
 
-const walls: Wall[] = [
-  { x: 0, y: 0, width: MAP_WIDTH, height: 24 },
-  { x: 0, y: MAP_HEIGHT - 24, width: MAP_WIDTH, height: 24 },
-  { x: 0, y: 0, width: 24, height: MAP_HEIGHT },
-  { x: MAP_WIDTH - 24, y: 0, width: 24, height: MAP_HEIGHT },
-  { x: 360, y: 120, width: 22, height: 360 },
-  { x: 680, y: 0, width: 22, height: 300 },
-  { x: 980, y: 190, width: 22, height: 360 },
-  { x: 1200, y: 560, width: 22, height: 320 },
-  { x: 220, y: 650, width: 420, height: 22 },
-  { x: 720, y: 520, width: 500, height: 22 },
-  { x: 1100, y: 120, width: 300, height: 22 }
-];
+function boundaryWalls(width: number, height: number): Wall[] {
+  return [
+    { x: 0, y: 0, width, height: 24 },
+    { x: 0, y: height - 24, width, height: 24 },
+    { x: 0, y: 0, width: 24, height },
+    { x: width - 24, y: 0, width: 24, height }
+  ];
+}
+
+const MAP_PRESETS: Record<GameMode, MapPreset> = {
+  timedSurvival: {
+    name: '분할 사무실',
+    theme: 'officeGrid',
+    width: 1600,
+    height: 1000,
+    initialResources: 14,
+    resourceLimit: 24,
+    walls: [
+    ...boundaryWalls(1600, 1000),
+    { x: 360, y: 120, width: 22, height: 360 },
+    { x: 680, y: 0, width: 22, height: 300 },
+    { x: 980, y: 190, width: 22, height: 360 },
+    { x: 1200, y: 560, width: 22, height: 320 },
+    { x: 220, y: 650, width: 420, height: 22 },
+    { x: 720, y: 520, width: 500, height: 22 },
+    { x: 1100, y: 120, width: 300, height: 22 }
+    ]
+  },
+  endless: {
+    name: '순환 복도',
+    theme: 'serviceLoop',
+    width: 1800,
+    height: 1080,
+    initialResources: 18,
+    resourceLimit: 30,
+    walls: [
+    ...boundaryWalls(1800, 1080),
+    { x: 260, y: 170, width: 22, height: 320 },
+    { x: 260, y: 590, width: 22, height: 320 },
+    { x: 610, y: 120, width: 22, height: 270 },
+    { x: 610, y: 690, width: 22, height: 270 },
+    { x: 960, y: 120, width: 22, height: 270 },
+    { x: 960, y: 690, width: 22, height: 270 },
+    { x: 1310, y: 120, width: 22, height: 270 },
+    { x: 1310, y: 690, width: 22, height: 270 },
+    { x: 430, y: 520, width: 320, height: 22 },
+    { x: 900, y: 520, width: 320, height: 22 },
+    { x: 1370, y: 520, width: 240, height: 22 }
+    ]
+  },
+  killTarget: {
+    name: '중앙 교전 구역',
+    theme: 'killArena',
+    width: 1500,
+    height: 1100,
+    initialResources: 10,
+    resourceLimit: 18,
+    walls: [
+    ...boundaryWalls(1500, 1100),
+    { x: 210, y: 150, width: 360, height: 24 },
+    { x: 930, y: 150, width: 360, height: 24 },
+    { x: 210, y: 926, width: 360, height: 24 },
+    { x: 930, y: 926, width: 360, height: 24 },
+    { x: 390, y: 320, width: 24, height: 460 },
+    { x: 1086, y: 320, width: 24, height: 460 },
+    { x: 610, y: 430, width: 280, height: 24 },
+    { x: 610, y: 646, width: 280, height: 24 },
+    { x: 720, y: 260, width: 60, height: 130 },
+    { x: 720, y: 710, width: 60, height: 130 }
+    ]
+  }
+};
+
+const MODE_LABELS: Record<GameMode, string> = {
+  timedSurvival: '제한시간 생존',
+  endless: '무제한 생존',
+  killTarget: '팀 처치 목표'
+};
 
 function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string): Room {
+  const sanitizedSettings = sanitizeSettings({ ...DEFAULT_SETTINGS, ...settings });
   return {
     id,
     title: sanitizeRoomTitle(title),
     phase: 'lobby',
-    settings: sanitizeSettings({ ...DEFAULT_SETTINGS, ...settings }),
+    settings: sanitizedSettings,
     players: new Map(),
     results: [],
     inputs: new Map(),
@@ -152,23 +239,46 @@ function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string
     feedbackEvents: [],
     wave: 1,
     countdown: 0,
-    remainingSec: DEFAULT_SETTINGS.gameDurationSec,
+    remainingSec: sanitizedSettings.gameMode === 'endless' ? 0 : sanitizedSettings.gameDurationSec,
+    endedElapsedSec: 0,
+    map: mapForMode(sanitizedSettings.gameMode),
     startedAt: 0,
     lastWaveAt: 0,
     nextZombieSpawnAt: 0,
     nextResourceSpawnAt: 0,
     recentDamage: new Map(),
     nextReliefSupplyAt: 0,
-    walls: walls.map((wall) => ({ ...wall })),
+    walls: wallsForMode(sanitizedSettings.gameMode),
     wallHp: new Map()
   };
 }
 
-function sanitizeSettings(settings: RoomSettings): RoomSettings {
+function sanitizeSettings(settings: Partial<RoomSettings>): RoomSettings {
+  const gameMode = isGameMode(settings.gameMode) ? settings.gameMode : DEFAULT_SETTINGS.gameMode;
   return {
-    maxPlayers: clamp(Math.round(settings.maxPlayers), 2, 8),
-    gameDurationSec: clamp(Math.round(settings.gameDurationSec), 60, 600),
+    maxPlayers: clamp(Math.round(settings.maxPlayers ?? DEFAULT_SETTINGS.maxPlayers), 2, 8),
+    gameMode,
+    gameDurationSec: clamp(Math.round(settings.gameDurationSec ?? DEFAULT_SETTINGS.gameDurationSec), 60, 600),
+    killTarget: clamp(Math.round(settings.killTarget ?? DEFAULT_SETTINGS.killTarget), 10, 1000),
     pvpEnabled: Boolean(settings.pvpEnabled)
+  };
+}
+
+function isGameMode(value: unknown): value is GameMode {
+  return value === 'timedSurvival' || value === 'endless' || value === 'killTarget';
+}
+
+function wallsForMode(mode: GameMode) {
+  return MAP_PRESETS[mode].walls.map((wall) => ({ ...wall }));
+}
+
+function mapForMode(mode: GameMode) {
+  const preset = MAP_PRESETS[mode];
+  return {
+    width: preset.width,
+    height: preset.height,
+    name: preset.name,
+    theme: preset.theme
   };
 }
 
@@ -225,18 +335,19 @@ function sanitizeAvatarId(avatarId: number) {
   return clamp(Math.round(Number.isFinite(avatarId) ? avatarId : 0), 0, 3);
 }
 
-function randomFreePosition(): Vec2 {
+function randomFreePosition(activeWalls: Wall[] = MAP_PRESETS.timedSurvival.walls, map = mapForMode('timedSurvival')): Vec2 {
   for (let i = 0; i < 80; i += 1) {
     const point = {
-      x: 80 + Math.random() * (MAP_WIDTH - 160),
-      y: 80 + Math.random() * (MAP_HEIGHT - 160)
+      x: 80 + Math.random() * (map.width - 160),
+      y: 80 + Math.random() * (map.height - 160)
     };
-    if (!collidesWithWalls(point, PLAYER_RADIUS)) return point;
+    if (!collidesWithWalls(point, PLAYER_RADIUS, activeWalls)) return point;
   }
   return { x: 120, y: 120 };
 }
 
 function snapshot(room: Room): GameSnapshot {
+  const elapsedSec = elapsedSeconds(room);
   return {
     roomId: room.id,
     roomTitle: room.title,
@@ -254,13 +365,69 @@ function snapshot(room: Room): GameSnapshot {
     feedbackEvents: room.feedbackEvents.map(({ ttl: _ttl, ...event }) => event),
     wave: room.wave,
     countdown: Math.ceil(room.countdown),
-    remainingSec: Math.max(0, Math.ceil(room.remainingSec)),
-    map: { width: MAP_WIDTH, height: MAP_HEIGHT }
+    remainingSec: room.settings.gameMode === 'endless' ? 0 : Math.max(0, Math.ceil(room.remainingSec)),
+    elapsedSec: Math.max(0, Math.floor(elapsedSec)),
+    objective: objectiveState(room, elapsedSec),
+    map: room.map
   };
 }
 
 function broadcast(room: Room) {
   io.to(room.id).emit('snapshot', snapshot(room));
+}
+
+function elapsedSeconds(room: Room) {
+  if (room.phase !== 'playing' && room.phase !== 'paused' && room.phase !== 'ended') return 0;
+  if (room.phase === 'ended') return room.endedElapsedSec;
+  if (room.settings.gameMode === 'timedSurvival') return room.settings.gameDurationSec - room.remainingSec;
+  return Math.max(0, (Date.now() - room.startedAt) / 1000);
+}
+
+function teamKills(room: Room) {
+  let kills = 0;
+  for (const player of room.players.values()) kills += player.kills;
+  return kills;
+}
+
+function objectiveState(room: Room, elapsed: number): GameSnapshot['objective'] {
+  const aliveCount = [...room.players.values()].filter((player) => player.alive).length;
+  const failed = room.phase === 'ended' && aliveCount === 0;
+  if (room.settings.gameMode === 'endless') {
+    return {
+      mode: room.settings.gameMode,
+      label: MODE_LABELS.endless,
+      current: Math.floor(elapsed),
+      completed: false,
+      failed
+    };
+  }
+  if (room.settings.gameMode === 'killTarget') {
+    const kills = teamKills(room);
+    return {
+      mode: room.settings.gameMode,
+      label: MODE_LABELS.killTarget,
+      current: kills,
+      target: room.settings.killTarget,
+      completed: kills >= room.settings.killTarget,
+      failed
+    };
+  }
+  return {
+    mode: room.settings.gameMode,
+    label: MODE_LABELS.timedSurvival,
+    current: Math.min(room.settings.gameDurationSec, Math.floor(elapsed)),
+    target: room.settings.gameDurationSec,
+    completed: room.remainingSec <= 0,
+    failed
+  };
+}
+
+function shouldEndGame(room: Room) {
+  const aliveCount = [...room.players.values()].filter((player) => player.alive).length;
+  if (aliveCount === 0) return true;
+  if (room.settings.gameMode === 'timedSurvival') return room.remainingSec <= 0;
+  if (room.settings.gameMode === 'killTarget') return teamKills(room) >= room.settings.killTarget;
+  return false;
 }
 
 function emptyUpgrades() {
@@ -287,7 +454,9 @@ function roomSummaries(): RoomSummary[] {
         playerCount: players.length,
         maxPlayers: room.settings.maxPlayers,
         readyCount: players.filter((player) => player.ready).length,
+        gameMode: room.settings.gameMode,
         gameDurationSec: room.settings.gameDurationSec,
+        killTarget: room.settings.killTarget,
         pvpEnabled: room.settings.pvpEnabled,
         hostNickname: host?.nickname ?? 'Host'
       };
@@ -308,7 +477,8 @@ function startCountdown(room: Room) {
 function startGame(room: Room) {
   room.phase = 'playing';
   room.wave = 1;
-  room.remainingSec = room.settings.gameDurationSec;
+  room.remainingSec = room.settings.gameMode === 'endless' ? 0 : room.settings.gameDurationSec;
+  room.endedElapsedSec = 0;
   room.startedAt = Date.now();
   room.lastWaveAt = 0;
   room.nextZombieSpawnAt = 2.2;
@@ -324,9 +494,10 @@ function startGame(room: Room) {
   room.powerZones = [];
   room.results = [];
   room.feedbackEvents = [];
-  room.walls = walls.map((wall) => ({ ...wall }));
+  room.map = mapForMode(room.settings.gameMode);
+  room.walls = wallsForMode(room.settings.gameMode);
   room.wallHp = new Map();
-  room.resources = Array.from({ length: 14 }, () => createResource(room));
+  room.resources = Array.from({ length: MAP_PRESETS[room.settings.gameMode].initialResources }, () => createResource(room));
   for (const player of room.players.values()) {
     killTimers.delete(comboKey(room, player.id));
     clearEquipmentTimers(room, player.id);
@@ -335,7 +506,7 @@ function startGame(room: Room) {
     player.alive = true;
     player.hp = 100;
     player.maxHp = 100;
-    player.position = randomFreePosition();
+    player.position = randomFreePosition(room.walls, room.map);
     player.score = 0;
     player.kills = 0;
     player.combo = 0;
@@ -354,6 +525,7 @@ function startGame(room: Room) {
 }
 
 function endGame(room: Room) {
+  room.endedElapsedSec = elapsedSeconds(room);
   room.phase = 'ended';
   const alive = [...room.players.values()].filter((player) => player.alive);
   if (alive.length === 1) alive[0].score += 50;
@@ -374,8 +546,8 @@ function tickRoom(room: Room) {
 
   if (room.phase !== 'playing') return;
 
-  room.remainingSec -= DT;
-  const elapsed = room.settings.gameDurationSec - room.remainingSec;
+  if (room.settings.gameMode !== 'endless') room.remainingSec -= DT;
+  const elapsed = elapsedSeconds(room);
   room.wave = 1 + Math.floor(elapsed / 24);
   updatePowerZones(room);
   updatePlayers(room, elapsed);
@@ -385,8 +557,7 @@ function tickRoom(room: Room) {
   updateFeedbackEvents(room);
   applySurvivalScore(room, elapsed);
 
-  const aliveCount = [...room.players.values()].filter((player) => player.alive).length;
-  if (room.remainingSec <= 0 || aliveCount === 0) endGame(room);
+  if (shouldEndGame(room)) endGame(room);
 }
 
 function updatePlayers(room: Room, elapsed: number) {
@@ -401,7 +572,7 @@ function updatePlayers(room: Room, elapsed: number) {
       y: player.position.y + move.y * speed * DT
     };
     if (!collidesWithWalls(next, PLAYER_RADIUS, room.walls) && !collidesWithFacilities(room, next, PLAYER_RADIUS)) {
-      player.position = clampToMap(next, PLAYER_RADIUS);
+      player.position = clampToMap(room, next, PLAYER_RADIUS);
     }
     const aim = normalize(input.aim);
     if (length(aim) > 0) player.aim = aim;
@@ -818,22 +989,23 @@ function spawnWorld(room: Room, elapsed: number) {
     const cap = Math.round((42 + director.aliveCount * 12 + room.wave * 4) * (1 - director.relief * 0.22));
     const pendingCount = room.spawnWarnings.length;
     for (let i = 0; i < count && room.zombies.length + pendingCount + i < cap; i += 1) {
-      room.spawnWarnings.push(createSpawnWarning(room.wave, undefined, director));
+      room.spawnWarnings.push(createSpawnWarning(room, undefined, director));
     }
     if (room.wave >= 4 && room.wave % 3 === 0 && director.relief < 0.45 && director.earlyEase <= 0) {
       const burstCount = Math.max(1, Math.round(director.aliveCount * (2 - director.relief)));
       const nextPendingCount = room.spawnWarnings.length;
       for (let i = 0; i < burstCount && room.zombies.length + nextPendingCount + i < cap; i += 1) {
-        room.spawnWarnings.push(createSpawnWarning(room.wave + 1, 'runner', director));
+        room.spawnWarnings.push(createSpawnWarning(room, 'runner', director, room.wave + 1));
       }
     }
     room.nextZombieSpawnAt = Math.max(1.15, 4.4 - room.wave * 0.13 + director.earlyEase * 0.75 + director.relief * 1.65);
   }
-  if (room.nextResourceSpawnAt <= 0 && room.resources.length < 24) {
+  const resourceLimit = MAP_PRESETS[room.settings.gameMode].resourceLimit;
+  if (room.nextResourceSpawnAt <= 0 && room.resources.length < resourceLimit) {
     room.resources.push(createResource(room, director));
     room.nextResourceSpawnAt = 4.2 + Math.random() * 5.0 - director.relief * 1.5;
   }
-  if (director.relief >= 0.62 && room.nextReliefSupplyAt <= 0 && room.resources.length < 28) {
+  if (director.relief >= 0.62 && room.nextReliefSupplyAt <= 0 && room.resources.length < resourceLimit + 4) {
     room.resources.push(createResource(room, director, true));
     room.nextReliefSupplyAt = 14 + Math.random() * 8;
   }
@@ -850,7 +1022,7 @@ function updateSpawnWarnings(room: Room) {
       return false;
     });
   for (const warning of ready) {
-    room.zombies.push(createZombie(room.wave, warning.type, undefined, warning.position));
+    room.zombies.push(createZombie(room, room.wave, warning.type, undefined, warning.position));
   }
 }
 
@@ -928,8 +1100,8 @@ function updateFeedbackEvents(room: Room) {
     .filter((event) => event.ttl > 0);
 }
 
-function createSpawnWarning(wave: number, forcedType?: ZombieType, director?: DirectorState): SpawnWarning {
-  const zombie = createZombie(wave, forcedType, director);
+function createSpawnWarning(room: Room, forcedType?: ZombieType, director?: DirectorState, wave = room.wave): SpawnWarning {
+  const zombie = createZombie(room, wave, forcedType, director);
   return {
     id: makeId('spawn'),
     type: zombie.type,
@@ -939,7 +1111,7 @@ function createSpawnWarning(wave: number, forcedType?: ZombieType, director?: Di
   };
 }
 
-function createZombie(wave: number, forcedType?: ZombieType, director?: DirectorState, position = randomEdgePosition()): Zombie {
+function createZombie(room: Room, wave: number, forcedType?: ZombieType, director?: DirectorState, position = randomEdgePosition(room)): Zombie {
   const roll = Math.random();
   const reliefFactor = 1 - (director?.relief ?? 0) * 0.65;
   const earlyFactor = 1 - (director?.earlyEase ?? 0) * 0.8;
@@ -981,7 +1153,7 @@ function createResource(room?: Room, director?: DirectorState, reliefSupply = fa
   return {
     id: makeId('resource'),
     type: types[Math.floor(Math.random() * types.length)],
-    position: room && needRecovery ? resourceNearVulnerablePlayer(room) : randomFreePosition()
+    position: room && needRecovery ? resourceNearVulnerablePlayer(room) : randomFreePosition(room?.walls, room?.map)
   };
 }
 
@@ -989,25 +1161,44 @@ function resourceNearVulnerablePlayer(room: Room) {
   const target = [...room.players.values()]
     .filter((player) => player.alive)
     .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
-  if (!target) return randomFreePosition();
+  if (!target) return randomFreePosition(room.walls, room.map);
   for (let i = 0; i < 30; i += 1) {
     const angle = Math.random() * Math.PI * 2;
     const radius = 120 + Math.random() * 180;
-    const point = clampToMap({
+    const point = clampToMap(room, {
       x: target.position.x + Math.cos(angle) * radius,
       y: target.position.y + Math.sin(angle) * radius
     }, RESOURCE_RADIUS);
     if (!collidesWithWalls(point, RESOURCE_RADIUS, room.walls) && !collidesWithFacilities(room, point, RESOURCE_RADIUS)) return point;
   }
-  return randomFreePosition();
+  return randomFreePosition(room.walls, room.map);
 }
 
-function randomEdgePosition(): Vec2 {
+function randomEdgePosition(room: Room): Vec2 {
+  const { width, height } = room.map;
+  if (room.settings.gameMode === 'killTarget') {
+    const gates = [
+      { x: width / 2, y: 42 },
+      { x: width - 42, y: height / 2 },
+      { x: width / 2, y: height - 42 },
+      { x: 42, y: height / 2 }
+    ];
+    const gate = gates[Math.floor(Math.random() * gates.length)];
+    return {
+      x: clamp(gate.x + (Math.random() - 0.5) * 180, 42, width - 42),
+      y: clamp(gate.y + (Math.random() - 0.5) * 180, 42, height - 42)
+    };
+  }
+  if (room.settings.gameMode === 'endless') {
+    const fromHorizontal = Math.random() < 0.68;
+    if (fromHorizontal) return { x: Math.random() < 0.5 ? 42 : width - 42, y: 160 + Math.random() * (height - 320) };
+    return { x: 180 + Math.random() * (width - 360), y: Math.random() < 0.5 ? 42 : height - 42 };
+  }
   const side = Math.floor(Math.random() * 4);
-  if (side === 0) return { x: Math.random() * MAP_WIDTH, y: 40 };
-  if (side === 1) return { x: MAP_WIDTH - 40, y: Math.random() * MAP_HEIGHT };
-  if (side === 2) return { x: Math.random() * MAP_WIDTH, y: MAP_HEIGHT - 40 };
-  return { x: 40, y: Math.random() * MAP_HEIGHT };
+  if (side === 0) return { x: Math.random() * width, y: 40 };
+  if (side === 1) return { x: width - 40, y: Math.random() * height };
+  if (side === 2) return { x: Math.random() * width, y: height - 40 };
+  return { x: 40, y: Math.random() * height };
 }
 
 function nearestAlivePlayer(room: Room, point: Vec2) {
@@ -1121,10 +1312,10 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function clampToMap(point: Vec2, radius: number): Vec2 {
+function clampToMap(room: Room, point: Vec2, radius: number): Vec2 {
   return {
-    x: clamp(point.x, radius, MAP_WIDTH - radius),
-    y: clamp(point.y, radius, MAP_HEIGHT - radius)
+    x: clamp(point.x, radius, room.map.width - radius),
+    y: clamp(point.y, radius, room.map.height - radius)
   };
 }
 
@@ -1139,8 +1330,8 @@ function moveZombieAroundWalls(room: Room, zombie: Zombie, desired: Vec2, target
     { x: desired.x, y: 0 },
     { x: 0, y: desired.y },
     normalize({
-      x: MAP_WIDTH / 2 - zombie.position.x,
-      y: MAP_HEIGHT / 2 - zombie.position.y
+      x: room.map.width / 2 - zombie.position.x,
+      y: room.map.height / 2 - zombie.position.y
     })
   ]
     .map(normalize)
@@ -1148,7 +1339,7 @@ function moveZombieAroundWalls(room: Room, zombie: Zombie, desired: Vec2, target
 
   const best = candidates
     .map((candidate) => {
-      const point = clampToMap({
+      const point = clampToMap(room, {
         x: zombie.position.x + candidate.x * step,
         y: zombie.position.y + candidate.y * step
       }, ZOMBIE_RADIUS);
@@ -1187,7 +1378,7 @@ function moveZombieWithPatterns(room: Room, zombie: Zombie, desired: Vec2, targe
   }
 
   if (now < state.dashUntil) {
-    const dashPoint = clampToMap({
+    const dashPoint = clampToMap(room, {
       x: zombie.position.x + state.dashDirection.x * speed * 2.5 * DT,
       y: zombie.position.y + state.dashDirection.y * speed * 2.5 * DT
     }, ZOMBIE_RADIUS);
@@ -1220,11 +1411,11 @@ function zombieAiKey(room: Room, zombie: Zombie) {
 
 function tryLeapWall(room: Room, zombie: Zombie, desired: Vec2) {
   const nearWall = room.walls
-    .filter((wall) => !isOuterWall(wall))
+    .filter((wall) => !isOuterWall(room, wall))
     .some((wall) => circleRect(zombie.position, ZOMBIE_RADIUS + 24, wall));
   if (!nearWall) return false;
 
-  const landing = clampToMap({
+  const landing = clampToMap(room, {
     x: zombie.position.x + desired.x * 76,
     y: zombie.position.y + desired.y * 76
   }, ZOMBIE_RADIUS);
@@ -1243,12 +1434,12 @@ function rotate(vector: Vec2, angle: number): Vec2 {
   };
 }
 
-function collidesWithWalls(point: Vec2, radius: number, activeWalls = walls) {
+function collidesWithWalls(point: Vec2, radius: number, activeWalls = MAP_PRESETS.timedSurvival.walls) {
   return activeWalls.some((wall) => circleRect(point, radius, wall));
 }
 
-function collidesWithMapBounds(point: Vec2, radius: number) {
-  return point.x < radius || point.y < radius || point.x > MAP_WIDTH - radius || point.y > MAP_HEIGHT - radius;
+function collidesWithMapBounds(room: Room, point: Vec2, radius: number) {
+  return point.x < radius || point.y < radius || point.x > room.map.width - radius || point.y > room.map.height - radius;
 }
 
 function damageBlockingWall(room: Room, zombie: Zombie, targetPoint: Vec2) {
@@ -1258,7 +1449,7 @@ function damageBlockingWall(room: Room, zombie: Zombie, targetPoint: Vec2) {
     y: zombie.position.y + dir.y * (ZOMBIE_RADIUS + 12)
   };
   const wall = room.walls
-    .filter((candidate) => !isOuterWall(candidate))
+    .filter((candidate) => !isOuterWall(room, candidate))
     .filter((candidate) => circleRect(probe, ZOMBIE_RADIUS + 8, candidate) || circleRect(zombie.position, ZOMBIE_RADIUS + 8, candidate))
     .sort((a, b) => distance(rectCenter(a), targetPoint) - distance(rectCenter(b), targetPoint))[0];
   if (!wall) return;
@@ -1279,8 +1470,8 @@ function wallKey(wall: Wall) {
   return `${wall.x}:${wall.y}:${wall.width}:${wall.height}`;
 }
 
-function isOuterWall(wall: Wall) {
-  return wall.x <= 0 || wall.y <= 0 || wall.x + wall.width >= MAP_WIDTH || wall.y + wall.height >= MAP_HEIGHT;
+function isOuterWall(room: Room, wall: Wall) {
+  return wall.x <= 0 || wall.y <= 0 || wall.x + wall.width >= room.map.width || wall.y + wall.height >= room.map.height;
 }
 
 function rectCenter(wall: Wall): Vec2 {
@@ -1305,7 +1496,7 @@ function rectCollidesWithFacilities(room: Room, rect: Wall) {
   });
 }
 
-function rectCollidesWithWalls(rect: Wall, activeWalls = walls) {
+function rectCollidesWithWalls(rect: Wall, activeWalls = MAP_PRESETS.timedSurvival.walls) {
   return activeWalls.some((wall) => rectsOverlap(rect, wall));
 }
 
@@ -1360,6 +1551,7 @@ io.on('connection', (socket) => {
     socket.join(room.id);
     socketRooms.set(socket.id, room.id);
     const player = createPlayer(socket.id, payload.nickname, room.players.size === 0, payload.avatarId);
+    player.position = randomFreePosition(room.walls, room.map);
     room.players.set(socket.id, player);
     socket.emit('joined', { roomId: room.id, playerId: socket.id });
     broadcast(room);
@@ -1382,7 +1574,10 @@ io.on('connection', (socket) => {
     const player = room?.players.get(socket.id);
     if (!room || !player?.host || room.phase !== 'lobby') return;
     room.settings = sanitizeSettings(settings);
-    room.remainingSec = room.settings.gameDurationSec;
+    room.remainingSec = room.settings.gameMode === 'endless' ? 0 : room.settings.gameDurationSec;
+    room.map = mapForMode(room.settings.gameMode);
+    room.walls = wallsForMode(room.settings.gameMode);
+    for (const candidate of room.players.values()) candidate.position = randomFreePosition(room.walls, room.map);
     broadcast(room);
     broadcastRoomList();
   });

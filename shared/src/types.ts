@@ -1,4 +1,6 @@
 export type GamePhase = 'lobby' | 'countdown' | 'playing' | 'paused' | 'ended';
+export type GameMode = 'timedSurvival' | 'endless' | 'killTarget';
+export type MapTheme = 'officeGrid' | 'serviceLoop' | 'killArena';
 export type ZombieType = 'normal' | 'runner' | 'tanker';
 export type ResourceType = 'chairParts' | 'deskParts' | 'partitionMaterial' | 'medKit';
 export type FacilityType = 'partitionBarricade' | 'deskBarricade' | 'medStation';
@@ -21,7 +23,9 @@ export type Vec2 = {
 
 export type RoomSettings = {
   maxPlayers: number;
+  gameMode: GameMode;
   gameDurationSec: number;
+  killTarget: number;
   pvpEnabled: boolean;
 };
 
@@ -141,9 +145,20 @@ export type GameSnapshot = {
   wave: number;
   countdown: number;
   remainingSec: number;
+  elapsedSec: number;
+  objective: {
+    mode: GameMode;
+    label: string;
+    current: number;
+    target?: number;
+    completed: boolean;
+    failed: boolean;
+  };
   map: {
     width: number;
     height: number;
+    name: string;
+    theme: MapTheme;
   };
 };
 
@@ -162,7 +177,9 @@ export type RoomSummary = {
   playerCount: number;
   maxPlayers: number;
   readyCount: number;
+  gameMode: GameMode;
   gameDurationSec: number;
+  killTarget: number;
   pvpEnabled: boolean;
   hostNickname: string;
 };
