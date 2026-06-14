@@ -669,6 +669,16 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     socket.emit('chooseUpgrade', upgradeId);
   }, []);
 
+  const activateUsableItem = useCallback((resource: ResourceType) => {
+    if (isSpectating) return;
+    if (resource === 'partitionMaterial') {
+      if (selectedInstallItemRef.current === 'partitionMaterial') confirmPartitionInstall();
+      else setSelectedInstallItem('partitionMaterial');
+      return;
+    }
+    queueItemUse(resource);
+  }, [confirmPartitionInstall, isSpectating, queueItemUse]);
+
   return (
     <main className={`game joystick-${touchControlSide}`}>
       <canvas
@@ -756,15 +766,12 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
               className={`usable-item-button ${count > 0 ? 'ready' : 'empty'}`}
               aria-pressed={resource === selectedInstallItem}
               disabled={count <= 0 || isSpectating}
-              onClick={() => {
-                if (isSpectating) return;
-                if (resource === 'partitionMaterial') {
-                  if (selectedInstallItem === 'partitionMaterial') confirmPartitionInstall();
-                  else setSelectedInstallItem('partitionMaterial');
-                  return;
-                }
-                queueItemUse(resource);
+              onTouchStart={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                activateUsableItem(resource);
               }}
+              onClick={() => activateUsableItem(resource)}
             >
               <i
                 style={{
@@ -783,6 +790,11 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         <button
           type="button"
           className="hud upgrade-choice-hud upgrade-choice-collapsed"
+          onTouchStart={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setUpgradeChoicesOpen(true);
+          }}
           onClick={() => setUpgradeChoicesOpen(true)}
         >
           <strong>Lv {me?.level} 업그레이드</strong>
@@ -796,6 +808,11 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
             <button
               type="button"
               className="upgrade-defer-button"
+              onTouchStart={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setUpgradeChoicesOpen(false);
+              }}
               onClick={() => setUpgradeChoicesOpen(false)}
             >
               {pendingUpgradeCount > 1 ? `${pendingUpgradeCount}개 대기` : '선택 대기'}

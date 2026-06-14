@@ -690,6 +690,8 @@ canvas {
   background: #173b3f;
   color: #f7fbfa;
   box-shadow: inset 0 0 0 2px rgba(255, 244, 163, 0.48), 0 10px 26px rgba(23, 59, 63, 0.22);
+  touch-action: manipulation;
+  user-select: none;
 }
 
 .usable-item-button.ready {
@@ -786,6 +788,8 @@ canvas {
   color: #0f6f72;
   font-size: 12px;
   font-weight: 900;
+  touch-action: manipulation;
+  user-select: none;
 }
 
 .upgrade-defer-button:hover,
@@ -798,6 +802,8 @@ canvas {
   min-height: 48px;
   justify-content: space-between;
   color: #17211d;
+  touch-action: manipulation;
+  user-select: none;
 }
 
 .upgrade-choice-collapsed span {
