@@ -609,6 +609,51 @@ canvas {
   font-size: 18px;
 }
 
+.opening-tip-hud {
+  left: 50%;
+  top: 18px;
+  width: min(460px, calc(100vw - 360px));
+  transform: translateX(-50%);
+  display: grid;
+  gap: 10px;
+  background: rgba(247, 251, 250, 0.82);
+  border-color: rgba(255, 255, 255, 0.42);
+  color: #17211d;
+  box-shadow: 0 16px 42px rgba(23, 59, 63, 0.18);
+}
+
+.opening-tip-hud div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.opening-tip-hud strong {
+  font-size: 16px;
+}
+
+.opening-tip-hud span {
+  color: rgba(23, 33, 29, 0.7);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.opening-tip-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.opening-tip-steps span {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 8px;
+  padding: 0 9px;
+  background: rgba(15, 139, 141, 0.12);
+  color: #0f6f72;
+  font-weight: 900;
+}
+
 .objective-chip {
   background: rgba(255, 244, 163, 0.72);
   color: #173b3f;
@@ -1155,6 +1200,15 @@ canvas {
   .hud {
     max-width: calc(50vw - 18px);
     flex-wrap: wrap;
+  }
+
+  .opening-tip-hud {
+    top: 116px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    transform: none;
   }
 
   .player-hud {

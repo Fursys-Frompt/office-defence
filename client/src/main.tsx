@@ -160,6 +160,109 @@ function resultShareText(snapshot: GameSnapshot, ranking: GameSnapshot['players'
   return lines.join('\n');
 }
 
+function drawShareText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number
+) {
+  const words = text.split(' ');
+  let line = '';
+  let currentY = y;
+  for (const word of words) {
+    const testLine = line ? `${line} ${word}` : word;
+    if (context.measureText(testLine).width > maxWidth && line) {
+      context.fillText(line, x, currentY);
+      line = word;
+      currentY += lineHeight;
+    } else {
+      line = testLine;
+    }
+  }
+  if (line) context.fillText(line, x, currentY);
+  return currentY + lineHeight;
+}
+
+async function createResultShareImage(snapshot: GameSnapshot, ranking: GameSnapshot['players']) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1200;
+  canvas.height = 630;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is not available.');
+
+  const gradient = context.createLinearGradient(0, 0, 1200, 630);
+  gradient.addColorStop(0, '#173b3f');
+  gradient.addColorStop(0.56, '#3e7d63');
+  gradient.addColorStop(1, '#f0c86a');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 1200, 630);
+
+  context.fillStyle = 'rgba(247, 251, 250, 0.94)';
+  context.beginPath();
+  context.roundRect(64, 56, 1072, 518, 28);
+  context.fill();
+
+  context.fillStyle = '#0f8b8d';
+  context.font = '800 28px Inter, sans-serif';
+  context.fillText('OFFICE ZOMBIE SURVIVAL', 104, 116);
+
+  context.fillStyle = '#17211d';
+  context.font = '900 64px Inter, sans-serif';
+  context.fillText(ranking[0] ? `${ranking[0].nickname} 1위` : '생존 결과', 104, 196);
+
+  context.font = '800 30px Inter, sans-serif';
+  const nextY = drawShareText(
+    context,
+    `${snapshot.roomTitle} · ${snapshot.objective.label} ${objectiveSummary(snapshot.objective)}`,
+    104,
+    250,
+    790,
+    38
+  );
+
+  const top = ranking[0];
+  const stats = top
+    ? [`${top.score}점`, `${top.kills}처치`, `${top.survivalSec}초 생존`]
+    : ['결과 없음'];
+  let statX = 104;
+  for (const stat of stats) {
+    const width = Math.max(132, context.measureText(stat).width + 42);
+    context.fillStyle = '#173b3f';
+    context.beginPath();
+    context.roundRect(statX, nextY + 18, width, 54, 14);
+    context.fill();
+    context.fillStyle = '#f7fbfa';
+    context.font = '900 26px Inter, sans-serif';
+    context.fillText(stat, statX + 21, nextY + 53);
+    statX += width + 14;
+  }
+
+  context.fillStyle = '#17211d';
+  context.font = '800 28px Inter, sans-serif';
+  ranking.slice(1, 4).forEach((player, index) => {
+    context.fillText(`${index + 2}위 ${player.nickname}`, 104, 430 + index * 42);
+    context.fillStyle = 'rgba(23, 33, 29, 0.64)';
+    context.font = '800 24px Inter, sans-serif';
+    context.fillText(`${player.score}점 · ${player.kills}처치`, 360, 430 + index * 42);
+    context.fillStyle = '#17211d';
+    context.font = '800 28px Inter, sans-serif';
+  });
+
+  context.fillStyle = 'rgba(23, 33, 29, 0.62)';
+  context.font = '800 24px Inter, sans-serif';
+  context.fillText(roomInviteUrl(snapshot.roomId), 104, 536);
+
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((value) => {
+      if (value) resolve(value);
+      else reject(new Error('Failed to render result image.'));
+    }, 'image/png');
+  });
+  return new File([blob], `office-zombie-${snapshot.roomId}.png`, { type: 'image/png' });
+}
+
 function LobbyApp() {
   const [nickname, setNickname] = useState('');
   const [roomTitle, setRoomTitle] = useState('');
@@ -258,9 +361,26 @@ function LobbyApp() {
     setRoomId('');
     setPlayerId('');
     setSnapshot(null);
+    setShareStatus('');
+    setInviteStatus('');
     const url = new URL(window.location.href);
     url.searchParams.delete('room');
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    refreshRooms();
+  };
+
+  const createNewRoom = () => {
+    socket.emit('leaveRoom');
+    settingsRoomRef.current = '';
+    setRoomId('');
+    setPlayerId('');
+    setSnapshot(null);
+    setShareStatus('');
+    setInviteStatus('');
+    const url = new URL(window.location.href);
+    url.searchParams.delete('room');
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    setPendingAction({ mode: 'create' });
     refreshRooms();
   };
 
@@ -465,23 +585,52 @@ function LobbyApp() {
       ? snapshot.results
       : [...snapshot.players].sort((a, b) => b.score - a.score);
     const objective = snapshot.objective;
+    const saveResultImage = async () => {
+      try {
+        const image = await createResultShareImage(snapshot, ranking);
+        const url = URL.createObjectURL(image);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = image.name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setShareStatus('결과 이미지를 저장했습니다.');
+      } catch {
+        setShareStatus('결과 이미지 저장에 실패했습니다.');
+      }
+    };
     const shareResult = async () => {
       const text = resultShareText(snapshot, ranking);
-      const nativeShare = (navigator as Navigator & { share?: (data: ShareData) => Promise<void> }).share;
+      const nativeNavigator = navigator as Navigator & {
+        canShare?: (data: ShareData) => boolean;
+        share?: (data: ShareData) => Promise<void>;
+      };
+      const nativeShare = nativeNavigator.share;
       let sharedNatively = false;
       try {
-        if (nativeShare) {
+        const image = await createResultShareImage(snapshot, ranking);
+        const imageShareData: ShareData = {
+          title: '오피스 좀비 서바이벌 결과',
+          text,
+          files: [image]
+        };
+        if (nativeShare && (!nativeNavigator.canShare || nativeNavigator.canShare(imageShareData))) {
+          await nativeShare(imageShareData);
+          sharedNatively = true;
+        } else if (nativeShare) {
           await nativeShare({ title: '오피스 좀비 서바이벌 결과', text, url: roomInviteUrl(snapshot.roomId) });
           sharedNatively = true;
         } else {
           await copyText(text);
         }
-        setShareStatus(sharedNatively ? '공유를 열었습니다.' : '결과 카드를 복사했습니다.');
+        setShareStatus(sharedNatively ? '이미지 결과 공유를 열었습니다.' : '결과 메시지를 복사했습니다.');
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return;
         try {
           await copyText(text);
-          setShareStatus('결과 카드를 복사했습니다.');
+          setShareStatus('이미지 공유 대신 결과 메시지를 복사했습니다.');
         } catch {
           setShareStatus('결과 공유에 실패했습니다.');
         }
@@ -520,9 +669,11 @@ function LobbyApp() {
             ))}
           </div>
           <div className="result-actions">
-            <button type="button" onClick={shareResult}>결과 공유</button>
+            <button type="button" onClick={shareResult}>이미지 공유</button>
+            <button type="button" onClick={saveResultImage}>이미지 저장</button>
             <button type="button" onClick={copyInviteLink}>초대 링크</button>
             {me.host && <button className="primary" onClick={() => socket.emit('restartGame')}>같은 방 다시하기</button>}
+            <button type="button" onClick={createNewRoom}>새 방 만들기</button>
             <button onClick={leaveRoom}>로비로 나가기</button>
           </div>
           {(shareStatus || inviteStatus) && <p className="action-status">{shareStatus || inviteStatus}</p>}
@@ -570,6 +721,18 @@ function objectiveSummary(objective: GameSnapshot['objective']) {
   if (objective.target === undefined) return `${objective.current}`;
   if (objective.mode === 'killTarget') return `${objective.current}/${objective.target}킬`;
   return `${objective.current}/${objective.target}초`;
+}
+
+function openingObjectiveTitle(snapshot: GameSnapshot) {
+  if (snapshot.objective.mode === 'killTarget') return `먼저 ${snapshot.settings.killTarget}처치 달성`;
+  if (snapshot.objective.mode === 'endless') return '오래 버티고 점수 올리기';
+  return `${formatDuration(snapshot.settings.gameDurationSec)} 생존 경쟁`;
+}
+
+function openingObjectiveDetail(snapshot: GameSnapshot) {
+  if (snapshot.objective.mode === 'killTarget') return '개인 처치 수가 목표에 먼저 도달하면 순위가 결정됩니다.';
+  if (snapshot.objective.mode === 'endless') return '웨이브 압박 속에서 생존 시간과 점수를 함께 끌어올리세요.';
+  return '제한 시간 동안 생존, 처치, 자원 수집으로 개인 점수를 높이세요.';
 }
 
 function formatDuration(seconds: number) {
@@ -840,6 +1003,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const pendingChoices = me?.pendingUpgradeChoices ?? [];
   const pendingUpgradeCount = me?.pendingUpgradeCount ?? 0;
   const pendingChoiceKey = pendingChoices.map((choice) => choice.id).join('|');
+  const showOpeningTip = snapshot.phase === 'playing' && snapshot.elapsedSec < 18 && !isSpectating;
 
   useEffect(() => {
     if (pendingChoices.length > 0) setUpgradeChoicesOpen(true);
@@ -1035,6 +1199,19 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           </button>
         )}
       </section>
+      {showOpeningTip && (
+        <section className="hud opening-tip-hud" aria-label="초반 목표">
+          <div>
+            <strong>{openingObjectiveTitle(snapshot)}</strong>
+            <span>{openingObjectiveDetail(snapshot)}</span>
+          </div>
+          <div className="opening-tip-steps">
+            <span>자원 수집</span>
+            <span>장비 성장</span>
+            <span>랭킹 상승</span>
+          </div>
+        </section>
+      )}
       {snapshot.phase === 'paused' && (
         <div className="pause-overlay">
           <strong>일시정지</strong>
