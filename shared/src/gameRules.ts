@@ -21,7 +21,7 @@ export const EQUIPMENT_LABELS: Record<ResourceType, string> = {
 export const EQUIPMENT_DESCRIPTIONS: Record<ResourceType, string> = {
   chairParts: '주변 적을 밀어내고 피해를 줍니다.',
   deskParts: '공격 사거리와 자동 공격 빈도를 높입니다.',
-  partitionMaterial: '사용 시 조준 방향에 가로/세로 임시 바리케이드를 전개합니다.',
+  partitionMaterial: '사용 시 이동 방향 뒤쪽에 임시 바리케이드를 전개합니다.',
   medKit: '사용 시 체력을 회복합니다.'
 };
 
@@ -77,7 +77,7 @@ export function getPartitionPlacement(
   const barrierLength = PARTITION_BASE_LENGTH + Math.max(0, partitionLevel) * PARTITION_LENGTH_PER_LEVEL;
   const width = horizontalAim ? PARTITION_THICKNESS : barrierLength;
   const height = horizontalAim ? barrierLength : PARTITION_THICKNESS;
-  const sign = horizontalAim ? Math.sign(direction.x || 1) : Math.sign(direction.y || 1);
+  const sign = -(horizontalAim ? Math.sign(direction.x || 1) : Math.sign(direction.y || 1));
   const baseDistance = (horizontalAim ? width : height) / 2 + PARTITION_PLAYER_GAP;
   let fallback = makePartitionCandidate(playerPosition, horizontalAim, sign, baseDistance, 0, width, height);
   let best: PartitionPlacement | undefined;

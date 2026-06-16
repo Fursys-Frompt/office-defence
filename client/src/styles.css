@@ -472,6 +472,37 @@ h1 {
   font-weight: 900;
 }
 
+.share-modal {
+  width: min(480px, calc(100vw - 32px));
+}
+
+.share-target-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.share-target-grid a,
+.share-target-grid button {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(23, 59, 63, 0.14);
+  border-radius: 8px;
+  padding: 0 14px;
+  background: #173b3f;
+  color: #f7fbfa;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.share-target-grid a:hover,
+.share-target-grid button:hover {
+  background: #3e7d63;
+  box-shadow: 0 8px 24px rgba(23, 59, 63, 0.16);
+}
+
 .rank-place {
   width: 28px;
   height: 28px;

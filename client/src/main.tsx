@@ -160,6 +160,19 @@ function resultShareText(snapshot: GameSnapshot, ranking: GameSnapshot['players'
   return lines.join('\n');
 }
 
+function externalShareTargets(text: string, url: string) {
+  const encodedText = encodeURIComponent(text);
+  const encodedUrl = encodeURIComponent(url);
+  return [
+    { label: '문자', href: `sms:?&body=${encodedText}` },
+    { label: '메일', href: `mailto:?subject=${encodeURIComponent('오피스 좀비 서바이벌 결과')}&body=${encodedText}` },
+    { label: 'WhatsApp', href: `https://wa.me/?text=${encodedText}` },
+    { label: 'Telegram', href: `https://t.me/share/url?url=${encodedUrl}&text=${encodedText}` },
+    { label: 'X', href: `https://twitter.com/intent/tweet?text=${encodedText}` },
+    { label: 'Facebook', href: `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}` }
+  ];
+}
+
 function drawShareText(
   context: CanvasRenderingContext2D,
   text: string,
@@ -275,6 +288,7 @@ function LobbyApp() {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [pendingAction, setPendingAction] = useState<PendingRoomAction | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [sharePanelOpen, setSharePanelOpen] = useState(false);
   const [inviteStatus, setInviteStatus] = useState('');
   const [shareStatus, setShareStatus] = useState('');
   const settingsRoomRef = useRef('');
@@ -585,6 +599,9 @@ function LobbyApp() {
       ? snapshot.results
       : [...snapshot.players].sort((a, b) => b.score - a.score);
     const objective = snapshot.objective;
+    const shareText = resultShareText(snapshot, ranking);
+    const shareUrl = roomInviteUrl(snapshot.roomId);
+    const shareTargets = externalShareTargets(shareText, shareUrl);
     const saveResultImage = async () => {
       try {
         const image = await createResultShareImage(snapshot, ranking);
@@ -602,38 +619,26 @@ function LobbyApp() {
       }
     };
     const shareResult = async () => {
-      const text = resultShareText(snapshot, ranking);
       const nativeNavigator = navigator as Navigator & {
-        canShare?: (data: ShareData) => boolean;
         share?: (data: ShareData) => Promise<void>;
       };
       const nativeShare = nativeNavigator.share;
-      let sharedNatively = false;
+      if (!nativeShare) {
+        setSharePanelOpen(true);
+        setShareStatus('공유할 앱을 선택하세요.');
+        return;
+      }
       try {
-        const image = await createResultShareImage(snapshot, ranking);
-        const imageShareData: ShareData = {
+        await nativeShare({
           title: '오피스 좀비 서바이벌 결과',
-          text,
-          files: [image]
-        };
-        if (nativeShare && (!nativeNavigator.canShare || nativeNavigator.canShare(imageShareData))) {
-          await nativeShare(imageShareData);
-          sharedNatively = true;
-        } else if (nativeShare) {
-          await nativeShare({ title: '오피스 좀비 서바이벌 결과', text, url: roomInviteUrl(snapshot.roomId) });
-          sharedNatively = true;
-        } else {
-          await copyText(text);
-        }
-        setShareStatus(sharedNatively ? '이미지 결과 공유를 열었습니다.' : '결과 메시지를 복사했습니다.');
+          text: shareText,
+          url: shareUrl
+        });
+        setShareStatus('공유를 열었습니다.');
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return;
-        try {
-          await copyText(text);
-          setShareStatus('이미지 공유 대신 결과 메시지를 복사했습니다.');
-        } catch {
-          setShareStatus('결과 공유에 실패했습니다.');
-        }
+        setSharePanelOpen(true);
+        setShareStatus('브라우저 공유 대신 앱 목록을 열었습니다.');
       }
     };
     return (
@@ -669,7 +674,7 @@ function LobbyApp() {
             ))}
           </div>
           <div className="result-actions">
-            <button type="button" onClick={shareResult}>이미지 공유</button>
+            <button type="button" onClick={shareResult}>공유하기</button>
             <button type="button" onClick={saveResultImage}>이미지 저장</button>
             <button type="button" onClick={copyInviteLink}>초대 링크</button>
             {me.host && <button className="primary" onClick={() => socket.emit('restartGame')}>같은 방 다시하기</button>}
@@ -678,6 +683,36 @@ function LobbyApp() {
           </div>
           {(shareStatus || inviteStatus) && <p className="action-status">{shareStatus || inviteStatus}</p>}
         </section>
+        {sharePanelOpen && (
+          <div className="modal-backdrop" role="dialog" aria-modal="true">
+            <section className="modal-card share-modal">
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">Share Result</p>
+                  <h2>공유하기</h2>
+                </div>
+                <button type="button" onClick={() => setSharePanelOpen(false)}>닫기</button>
+              </div>
+              <div className="share-target-grid">
+                {shareTargets.map((target) => (
+                  <a key={target.label} href={target.href} target="_blank" rel="noreferrer">
+                    {target.label}
+                  </a>
+                ))}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await copyText(shareText);
+                    setShareStatus('결과 메시지를 복사했습니다.');
+                    setSharePanelOpen(false);
+                  }}
+                >
+                  복사
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
       </main>
     );
   }
@@ -700,7 +735,7 @@ function GameGuideModal({ onClose }: { onClose: () => void }) {
           </article>
           <article>
             <strong>아이템</strong>
-            <p>책상은 사거리를 늘리고, 파티션은 조준 방향에 가로/세로 바리케이드를 전개합니다. 구급과 파티션은 직접 사용해야 합니다.</p>
+            <p>책상은 사거리를 늘리고, 파티션은 이동 방향 뒤쪽에 바리케이드를 전개합니다. 구급과 파티션은 직접 사용해야 합니다.</p>
           </article>
           <article>
             <strong>조작</strong>
@@ -819,7 +854,8 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const latestRender = useRef<{ snapshot: GameSnapshot; me: NonNullable<typeof snapshot.players[number]> } | null>(null);
   const pressed = useRef(new Set<string>());
-  const pointer = useRef<Vec2>({ x: 1, y: 0 });
+  const pointer = useRef<Vec2>({ x: 0, y: 0 });
+  const lastInputDirection = useRef<Vec2>({ x: 1, y: 0 });
   const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
   const [touchControlSide, setTouchControlSide] = useState<TouchControlSide>(() => readTouchControlSide());
   const [touchControlOpen, setTouchControlOpen] = useState(false);
@@ -842,12 +878,14 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     const current = latestInputState.current;
     const currentMe = current.me;
     const move = keyboardMove(pressed.current, joystick.current?.value);
+    const normalizedMove = normalizeInputDirection(move);
+    if (normalizedMove) lastInputDirection.current = normalizedMove;
     const canFight = Boolean(currentMe?.alive);
     const now = performance.now();
     if (!canFight || (queuedItem.current && queuedItem.current.until < now)) queuedItem.current = null;
     const useItemRequest = canFight ? queuedItem.current : null;
     const autoAim = canFight && currentMe ? getAutoAim(current.snapshot, currentMe) : undefined;
-    const aim = useItemRequest?.aim ?? (autoAim ? autoAim.direction : getPlacementAim(currentMe, pointer.current));
+    const aim = useItemRequest?.aim ?? (autoAim ? autoAim.direction : getPlacementAim(currentMe, pointer.current, move, lastInputDirection.current));
     const input: PlayerInput = {
       move,
       aim,
@@ -873,7 +911,12 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const confirmPartitionInstall = useCallback(() => {
     const currentMe = latestInputState.current.me;
     if (!currentMe?.alive || currentMe.inventory.partitionMaterial <= 0) return;
-    queueItemUse('partitionMaterial', getPlacementAim(currentMe, pointer.current));
+    queueItemUse('partitionMaterial', getPlacementAim(
+      currentMe,
+      pointer.current,
+      keyboardMove(pressed.current, joystick.current?.value),
+      lastInputDirection.current
+    ));
     setSelectedInstallItem(null);
   }, [queueItemUse]);
 
@@ -951,7 +994,12 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         const partitionPreview = selectedInstallItemRef.current === 'partitionMaterial' && current.me.inventory.partitionMaterial > 0
           ? getPartitionPlacement(
               current.me.position,
-              getPlacementAim(current.me, pointer.current),
+              getPlacementAim(
+                current.me,
+                pointer.current,
+                keyboardMove(pressed.current, joystick.current?.value),
+                lastInputDirection.current
+              ),
               current.me.upgrades.partition,
               current.snapshot.walls,
               current.snapshot.facilities
@@ -1301,7 +1349,27 @@ function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
   };
 }
 
-function getPlacementAim(player: GameSnapshot['players'][number] | undefined, pointerAim: Vec2): Vec2 {
+function normalizeInputDirection(direction?: Vec2) {
+  const length = direction ? Math.hypot(direction.x, direction.y) : 0;
+  if (!direction || length <= 0.025) return undefined;
+  return {
+    x: direction.x / length,
+    y: direction.y / length
+  };
+}
+
+function getPlacementAim(
+  player: GameSnapshot['players'][number] | undefined,
+  pointerAim: Vec2,
+  moveAim?: Vec2,
+  fallbackAim?: Vec2
+): Vec2 {
+  const normalizedMove = normalizeInputDirection(moveAim);
+  if (normalizedMove) return normalizedMove;
+
+  const normalizedFallback = normalizeInputDirection(fallbackAim);
+  if (normalizedFallback) return normalizedFallback;
+
   const pointerLength = Math.hypot(pointerAim.x, pointerAim.y);
   if (pointerLength > 0.001) {
     return {
