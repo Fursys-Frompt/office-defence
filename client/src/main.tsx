@@ -12,18 +12,27 @@ import type {
   RoomSummary,
   RoomSettings,
   ServerToClientEvents,
-  Vec2
+  SupportEquipmentType,
+  Vec2,
+  WeaponType
 } from '../../shared/src/types';
 import {
-  EQUIPMENT_DESCRIPTIONS,
-  EQUIPMENT_LABELS,
   RESOURCE_LABELS,
+  SUPPORT_EQUIPMENT_COSTS,
+  SUPPORT_EQUIPMENT_LABELS,
+  WEAPON_COSTS,
+  WEAPON_LABELS,
+  craftMaterialKeys,
   getPartitionPlacement,
-  resourceKeys,
+  supportEquipmentKeys,
+  usableResourceKeys,
+  weaponKeys,
   type PartitionPlacement
 } from '../../shared/src/gameRules';
 import { ConceptArtBoard } from './ConceptArtBoard';
 import avatarAtlasUrl from './assets/office-player-avatars.png';
+import craftingIconsUrl from './assets/office-crafting-icons.png';
+import emergencyAedIconUrl from './assets/emergency-aed-icon.png';
 import propAtlasUrl from './assets/office-props-atlas.png';
 import spriteSheetUrl from './assets/office-survival-sprites.png';
 import './styles.css';
@@ -63,13 +72,38 @@ const CAMERA_FOLLOW_AMOUNT = 0.62;
 const LOCAL_PLAYER_FOLLOW_AMOUNT = 0.84;
 const REMOTE_ENTITY_FOLLOW_AMOUNT = 0.36;
 const BASE_ATTACK_RANGE = 360;
-const DESK_RANGE_BONUS = 18;
 const POWER_ZONE_RANGE_BONUS = 110;
 const RESOURCE_SPRITES: Record<ResourceType, { col: number; row: number; size: number }> = {
-  chairParts: { col: 0, row: 0, size: 34 },
-  deskParts: { col: 1, row: 0, size: 34 },
   partitionMaterial: { col: 2, row: 0, size: 38 },
-  medKit: { col: 0, row: 1, size: 36 }
+  mixCoffee: { col: 0, row: 1, size: 36 },
+  keycapSet: { col: 0, row: 0, size: 34 },
+  paperBundle: { col: 1, row: 0, size: 34 },
+  officeMotor: { col: 1, row: 1, size: 34 },
+  batteryPack: { col: 2, row: 1, size: 34 },
+  rubberPart: { col: 3, row: 0, size: 34 },
+  approvalKit: { col: 3, row: 1, size: 34 }
+};
+const CRAFTING_ICON_SPRITES: Record<ResourceType | WeaponType | SupportEquipmentType, { col: number; row: number }> = {
+  partitionMaterial: { col: 2, row: 0 },
+  mixCoffee: { col: 2, row: 3 },
+  keycapSet: { col: 0, row: 0 },
+  paperBundle: { col: 1, row: 0 },
+  officeMotor: { col: 2, row: 0 },
+  batteryPack: { col: 3, row: 0 },
+  rubberPart: { col: 0, row: 1 },
+  approvalKit: { col: 1, row: 1 },
+  keyboardShotgun: { col: 2, row: 1 },
+  printerCannon: { col: 3, row: 1 },
+  plunger: { col: 0, row: 2 },
+  corporateCardBoomerang: { col: 1, row: 2 },
+  guardFlashlight: { col: 2, row: 2 },
+  robotVacuumDrone: { col: 3, row: 2 },
+  mzKeycap: { col: 0, row: 3 },
+  annualLeaveShield: { col: 1, row: 3 },
+  emergencyAed: { col: 3, row: 3 }
+};
+const CRAFTING_ICON_IMAGES: Partial<Record<ResourceType | WeaponType | SupportEquipmentType, string>> = {
+  emergencyAed: emergencyAedIconUrl
 };
 const FACILITY_SPRITES: Record<FacilityType, { col: number; row: number; size: number }> = {
   partitionBarricade: { col: 1, row: 1, size: 58 },
@@ -115,8 +149,7 @@ type MotionSample = {
 
 const motionSamples = new Map<string, MotionSample>();
 const renderPositions = new Map<string, Vec2>();
-const passiveItemKeys: ResourceType[] = ['chairParts', 'deskParts'];
-const usableItemKeys: ResourceType[] = ['medKit', 'partitionMaterial'];
+const usableItemKeys: ResourceType[] = usableResourceKeys;
 
 type PendingRoomAction = {
   mode: 'create' | 'join';
@@ -735,7 +768,7 @@ function GameGuideModal({ onClose }: { onClose: () => void }) {
           </article>
           <article>
             <strong>아이템</strong>
-            <p>책상은 사거리를 늘리고, 파티션은 이동 방향 뒤쪽에 바리케이드를 전개합니다. 구급과 파티션은 직접 사용해야 합니다.</p>
+            <p>제작대 근처에서 재료를 조합해 무기와 보조장비를 만들 수 있습니다. 믹스커피와 파티션은 직접 사용해야 합니다.</p>
           </article>
           <article>
             <strong>조작</strong>
@@ -863,13 +896,25 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const [selectedInstallItem, setSelectedInstallItem] = useState<InstallItem | null>(null);
   const selectedInstallItemRef = useRef<InstallItem | null>(null);
   const queuedItem = useRef<{ type: ResourceType; requestId: number; until: number; aim?: Vec2 } | null>(null);
+  const queuedCraft = useRef<{
+    requestId: number;
+    until: number;
+    craftWeapon?: WeaponType;
+    equipWeapon?: WeaponType;
+    craftSupport?: SupportEquipmentType;
+    equipSupport?: SupportEquipmentType;
+  } | null>(null);
+  const queuedSupport = useRef<{ type: SupportEquipmentType; requestId: number; until: number } | null>(null);
   const itemRequestSeq = useRef(0);
+  const craftRequestSeq = useRef(0);
+  const supportRequestSeq = useRef(0);
   const seenFeedback = useRef(new Set<string>());
   const visualEffects = useRef<VisualEffect[]>([]);
   const latestInputState = useRef<{ snapshot: GameSnapshot; me?: GameSnapshot['players'][number] }>({ snapshot });
   const audio = useRef(createAudioEngine());
   const spriteSheet = useGameImage(spriteSheetUrl);
   const propAtlas = useGameImage(propAtlasUrl);
+  const craftingIcons = useGameImage(craftingIconsUrl);
   const avatarAtlas = useGameImage(avatarAtlasUrl);
   const me = snapshot.players.find((player) => player.id === playerId);
   latestInputState.current = { snapshot, me };
@@ -883,7 +928,11 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     const canFight = Boolean(currentMe?.alive);
     const now = performance.now();
     if (!canFight || (queuedItem.current && queuedItem.current.until < now)) queuedItem.current = null;
+    if (!canFight || (queuedCraft.current && queuedCraft.current.until < now)) queuedCraft.current = null;
+    if (!canFight || (queuedSupport.current && queuedSupport.current.until < now)) queuedSupport.current = null;
     const useItemRequest = canFight ? queuedItem.current : null;
+    const craftRequest = canFight ? queuedCraft.current : null;
+    const supportRequest = canFight ? queuedSupport.current : null;
     const autoAim = canFight && currentMe ? getAutoAim(current.snapshot, currentMe) : undefined;
     const aim = useItemRequest?.aim ?? (autoAim ? autoAim.direction : getPlacementAim(currentMe, pointer.current, move, lastInputDirection.current));
     const input: PlayerInput = {
@@ -892,7 +941,14 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       shooting: Boolean(canFight && autoAim && currentMe && autoAim.distance <= playerAttackRange(current.snapshot, currentMe)),
       melee: false,
       useItem: useItemRequest?.type,
-      useItemRequestId: useItemRequest?.requestId
+      useItemRequestId: useItemRequest?.requestId,
+      craftWeapon: craftRequest?.craftWeapon,
+      equipWeapon: craftRequest?.equipWeapon,
+      craftSupport: craftRequest?.craftSupport,
+      equipSupport: craftRequest?.equipSupport,
+      craftRequestId: craftRequest?.requestId,
+      activateSupport: supportRequest?.type,
+      supportRequestId: supportRequest?.requestId
     };
     socket.emit('input', input);
   }, []);
@@ -904,6 +960,26 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       requestId: itemRequestSeq.current,
       until: performance.now() + ITEM_INPUT_HOLD_MS,
       aim
+    };
+    sendInput();
+  }, [sendInput]);
+
+  const queueCraftAction = useCallback((action: Omit<NonNullable<typeof queuedCraft.current>, 'requestId' | 'until'>) => {
+    craftRequestSeq.current += 1;
+    queuedCraft.current = {
+      ...action,
+      requestId: craftRequestSeq.current,
+      until: performance.now() + ITEM_INPUT_HOLD_MS
+    };
+    sendInput();
+  }, [sendInput]);
+
+  const queueSupportUse = useCallback((type: SupportEquipmentType) => {
+    supportRequestSeq.current += 1;
+    queuedSupport.current = {
+      type,
+      requestId: supportRequestSeq.current,
+      until: performance.now() + ITEM_INPUT_HOLD_MS
     };
     sendInput();
   }, [sendInput]);
@@ -924,7 +1000,11 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     const onKeyDown = (event: KeyboardEvent) => {
       audio.current.unlock();
       pressed.current.add(event.code);
-      if (!event.repeat && event.code === 'KeyQ') queueItemUse('medKit');
+      if (!event.repeat && event.code === 'KeyQ') queueItemUse('mixCoffee');
+      if (!event.repeat && event.code === 'KeyR') {
+        const support = latestInputState.current.me?.equippedSupportEquipment;
+        if (support && support !== 'robotVacuumDrone' && support !== 'emergencyAed') queueSupportUse(support);
+      }
       if (!event.repeat && event.code === 'KeyE') {
         if (selectedInstallItemRef.current === 'partitionMaterial') confirmPartitionInstall();
         else if ((latestInputState.current.me?.inventory.partitionMaterial ?? 0) > 0) setSelectedInstallItem('partitionMaterial');
@@ -946,7 +1026,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [confirmPartitionInstall, queueItemUse, sendInput]);
+  }, [confirmPartitionInstall, queueItemUse, queueSupportUse, sendInput]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -1013,6 +1093,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           camera,
           spriteSheet,
           propAtlas,
+          craftingIcons,
           avatarAtlas,
           partitionPreview,
           visualEffects.current
@@ -1022,7 +1103,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     };
     frame = requestAnimationFrame(render);
     return () => cancelAnimationFrame(frame);
-  }, [spriteSheet, propAtlas, avatarAtlas]);
+  }, [spriteSheet, propAtlas, craftingIcons, avatarAtlas]);
 
   useEffect(() => {
     const now = performance.now();
@@ -1052,6 +1133,26 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   const pendingUpgradeCount = me?.pendingUpgradeCount ?? 0;
   const pendingChoiceKey = pendingChoices.map((choice) => choice.id).join('|');
   const showOpeningTip = snapshot.phase === 'playing' && snapshot.elapsedSec < 18 && !isSpectating;
+  const nearestCraftingStation = me
+    ? snapshot.craftingStations
+        .map((station) => ({ station, distance: Math.hypot(station.position.x - me.position.x, station.position.y - me.position.y) }))
+        .filter(({ station, distance }) => distance <= station.interactionRadius)
+        .sort((a, b) => a.distance - b.distance)[0]?.station
+    : undefined;
+  const sortedCraftWeapons = useMemo(() => {
+    return sortCraftEntries(weaponKeys, (weapon) => ({
+      crafted: Boolean(me?.craftedWeapons.includes(weapon)),
+      equipped: me?.equippedWeapon === weapon,
+      canCraft: Boolean(me && hasCost(me.inventory, WEAPON_COSTS[weapon]))
+    }));
+  }, [me?.craftedWeapons, me?.equippedWeapon, me?.inventory]);
+  const sortedCraftSupport = useMemo(() => {
+    return sortCraftEntries(supportEquipmentKeys, (support) => ({
+      crafted: Boolean(me?.craftedSupportEquipment.includes(support)),
+      equipped: me?.equippedSupportEquipment === support,
+      canCraft: Boolean(me && hasCost(me.inventory, SUPPORT_EQUIPMENT_COSTS[support]))
+    }));
+  }, [me?.craftedSupportEquipment, me?.equippedSupportEquipment, me?.inventory]);
 
   useEffect(() => {
     if (pendingChoices.length > 0) setUpgradeChoicesOpen(true);
@@ -1070,6 +1171,18 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     }
     queueItemUse(resource);
   }, [confirmPartitionInstall, isSpectating, queueItemUse]);
+
+  const craftOrEquipWeapon = useCallback((weapon: WeaponType) => {
+    if (isSpectating) return;
+    if (me?.craftedWeapons.includes(weapon)) queueCraftAction({ equipWeapon: weapon });
+    else queueCraftAction({ craftWeapon: weapon });
+  }, [isSpectating, me?.craftedWeapons, queueCraftAction]);
+
+  const craftOrEquipSupport = useCallback((support: SupportEquipmentType) => {
+    if (isSpectating) return;
+    if (me?.craftedSupportEquipment.includes(support)) queueCraftAction({ equipSupport: support });
+    else queueCraftAction({ craftSupport: support });
+  }, [isSpectating, me?.craftedSupportEquipment, queueCraftAction]);
 
   return (
     <main className={`game joystick-${touchControlSide}`}>
@@ -1131,23 +1244,6 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         </div>
         <b>{isSpectating ? '이동 관전 가능' : `체력 ${hp}/${maxHp}`}</b>
       </section>
-      <section className="hud inventory-hud">
-        {passiveItemKeys.map((resource) => (
-          <span
-            key={resource}
-            className={`inventory-chip passive ${(me?.inventory[resource] ?? 0) > 0 ? 'has' : 'empty'}`}
-          >
-            <i
-              style={{
-                backgroundImage: `url(${propAtlasUrl})`,
-                backgroundPosition: spriteBackgroundPosition(RESOURCE_SPRITES[resource].col, RESOURCE_SPRITES[resource].row, 4, 4)
-              }}
-            />
-            <b>{me?.inventory[resource] ?? 0}</b>
-            <em>{RESOURCE_LABELS[resource]}</em>
-          </span>
-        ))}
-      </section>
       <section className="hud usable-item-hud">
         {usableItemKeys.map((resource) => {
           const count = me?.inventory[resource] ?? 0;
@@ -1167,17 +1263,94 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
             >
               <i
                 style={{
-                  backgroundImage: `url(${propAtlasUrl})`,
-                  backgroundPosition: spriteBackgroundPosition(RESOURCE_SPRITES[resource].col, RESOURCE_SPRITES[resource].row, 4, 4)
+                  backgroundImage: resource === 'mixCoffee' ? `url(${craftingIconsUrl})` : `url(${propAtlasUrl})`,
+                  backgroundPosition: resource === 'mixCoffee'
+                    ? spriteBackgroundPosition(CRAFTING_ICON_SPRITES.mixCoffee.col, CRAFTING_ICON_SPRITES.mixCoffee.row, 4, 4)
+                    : spriteBackgroundPosition(RESOURCE_SPRITES[resource].col, RESOURCE_SPRITES[resource].row, 4, 4)
                 }}
               />
-              <span>{resource === 'medKit' ? 'Q' : selectedInstallItem === 'partitionMaterial' ? '확정' : 'E'}</span>
+              <span>{resource === 'mixCoffee' ? 'Q' : selectedInstallItem === 'partitionMaterial' ? '확정' : 'E'}</span>
               <strong>{RESOURCE_LABELS[resource]}</strong>
               <b>{count}</b>
             </button>
           );
         })}
       </section>
+      <section className="hud crafting-hud">
+        <div className="crafting-title">
+          <strong>{nearestCraftingStation ? '제작대' : '제작대 밖'}</strong>
+          <span>{me?.equippedWeapon ? WEAPON_LABELS[me.equippedWeapon] : '기본 공격'} · {me?.equippedSupportEquipment ? SUPPORT_EQUIPMENT_LABELS[me.equippedSupportEquipment] : '보조 없음'}</span>
+        </div>
+        <div className="material-row">
+          {craftMaterialKeys.map((resource) => (
+            <span key={resource} className={(me?.inventory[resource] ?? 0) > 0 ? 'has' : ''}>
+              <i
+                style={{
+                  backgroundImage: `url(${craftingIconsUrl})`,
+                  backgroundPosition: spriteBackgroundPosition(CRAFTING_ICON_SPRITES[resource].col, CRAFTING_ICON_SPRITES[resource].row, 4, 4)
+                }}
+              />
+              <b>{me?.inventory[resource] ?? 0}</b>
+              <em>{RESOURCE_LABELS[resource]}</em>
+            </span>
+          ))}
+        </div>
+        {nearestCraftingStation && !isSpectating && (
+          <div className="crafting-list">
+            {sortedCraftWeapons.map((weapon) => {
+              const crafted = Boolean(me?.craftedWeapons.includes(weapon));
+              const equipped = me?.equippedWeapon === weapon;
+              const canCraft = Boolean(me && hasCost(me.inventory, WEAPON_COSTS[weapon]));
+              return (
+                <button
+                  key={weapon}
+                  type="button"
+                  className={equipped ? 'equipped' : crafted ? 'crafted' : canCraft ? 'ready' : 'locked'}
+                  disabled={!crafted && !canCraft}
+                  onClick={() => craftOrEquipWeapon(weapon)}
+                >
+                  <i
+                    style={craftingIconStyle(weapon)}
+                  />
+                  <strong>{WEAPON_LABELS[weapon]}</strong>
+                  <span>{crafted ? equipped ? '장착 중' : '장착' : costText(WEAPON_COSTS[weapon])}</span>
+                </button>
+              );
+            })}
+            {sortedCraftSupport.map((support) => {
+              const crafted = Boolean(me?.craftedSupportEquipment.includes(support));
+              const equipped = me?.equippedSupportEquipment === support;
+              const canCraft = Boolean(me && hasCost(me.inventory, SUPPORT_EQUIPMENT_COSTS[support]));
+              return (
+                <button
+                  key={support}
+                  type="button"
+                  className={equipped ? 'equipped support' : crafted ? 'crafted support' : canCraft ? 'ready support' : 'locked support'}
+                  disabled={!crafted && !canCraft}
+                  onClick={() => craftOrEquipSupport(support)}
+                >
+                  <i
+                    style={craftingIconStyle(support)}
+                  />
+                  <strong>{SUPPORT_EQUIPMENT_LABELS[support]}</strong>
+                  <span>{crafted ? equipped ? '장착 중' : '장착' : costText(SUPPORT_EQUIPMENT_COSTS[support])}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+      {me?.equippedSupportEquipment && me.equippedSupportEquipment !== 'robotVacuumDrone' && me.equippedSupportEquipment !== 'emergencyAed' && (
+        <button
+          type="button"
+          className="hud support-use-button"
+          disabled={isSpectating}
+          onClick={() => queueSupportUse(me.equippedSupportEquipment!)}
+        >
+          <strong>R</strong>
+          <span>{SUPPORT_EQUIPMENT_LABELS[me.equippedSupportEquipment]}</span>
+        </button>
+      )}
       {pendingChoices.length > 0 && !isSpectating && !upgradeChoicesOpen && (
         <button
           type="button"
@@ -1304,19 +1477,6 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
         ))}
       </section>
       {snapshot.phase === 'countdown' && <div className="countdown">{snapshot.countdown}</div>}
-      <section className="equipment-bar">
-        <div className="build-state">
-          <strong>패시브 장비</strong>
-          <span>부품 보유 시 자동 적용</span>
-        </div>
-        {passiveItemKeys.map((resource) => (
-          <div key={resource} className={`equipment-chip ${(me?.inventory[resource] ?? 0) > 0 ? 'active' : ''}`}>
-            <strong>Lv {me?.inventory[resource] ?? 0}</strong>
-            <span>{EQUIPMENT_LABELS[resource]}</span>
-            <small>{EQUIPMENT_DESCRIPTIONS[resource]}</small>
-          </div>
-        ))}
-      </section>
       <div className="touch-affordance" aria-hidden="true">
         <span />
       </div>
@@ -1339,6 +1499,37 @@ function writeTouchControlSide(side: TouchControlSide) {
   } catch {
     // The setting still works for the current session when persistent storage is unavailable.
   }
+}
+
+function sortCraftEntries<T>(entries: readonly T[], getState: (entry: T) => { crafted: boolean; equipped: boolean; canCraft: boolean }) {
+  return [...entries].sort((a, b) => craftSortScore(getState(a)) - craftSortScore(getState(b)));
+}
+
+function craftSortScore(state: { crafted: boolean; equipped: boolean; canCraft: boolean }) {
+  if (!state.crafted && state.canCraft) return 0;
+  if (state.equipped) return 1;
+  if (state.crafted) return 2;
+  return 3;
+}
+
+function hasCost(inventory: GameSnapshot['players'][number]['inventory'], cost: Partial<Record<ResourceType, number>>) {
+  return Object.entries(cost).every(([resource, amount]) => inventory[resource as ResourceType] >= (amount ?? 0));
+}
+
+function costText(cost: Partial<Record<ResourceType, number>>) {
+  return Object.entries(cost)
+    .map(([resource, amount]) => `${RESOURCE_LABELS[resource as ResourceType]} ${amount}`)
+    .join(' · ');
+}
+
+function materialGlyph(resource: ResourceType) {
+  if (resource === 'keycapSet') return 'K';
+  if (resource === 'paperBundle') return '문';
+  if (resource === 'officeMotor') return 'M';
+  if (resource === 'batteryPack') return 'B';
+  if (resource === 'rubberPart') return 'R';
+  if (resource === 'approvalKit') return '승';
+  return '·';
 }
 
 function keyboardMove(keys: Set<string>, joystickMove?: Vec2): Vec2 {
@@ -1391,6 +1582,23 @@ function spriteBackgroundPosition(col: number, row: number, columns: number, row
   const x = columns <= 1 ? 0 : (col / (columns - 1)) * 100;
   const y = rows <= 1 ? 0 : (row / (rows - 1)) * 100;
   return `${x}% ${y}%`;
+}
+
+function craftingIconStyle(type: ResourceType | WeaponType | SupportEquipmentType): React.CSSProperties {
+  const image = CRAFTING_ICON_IMAGES[type];
+  if (image) {
+    return {
+      backgroundImage: `url(${image})`,
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat',
+      backgroundSize: 'contain'
+    };
+  }
+  const sprite = CRAFTING_ICON_SPRITES[type];
+  return {
+    backgroundImage: `url(${craftingIconsUrl})`,
+    backgroundPosition: spriteBackgroundPosition(sprite.col, sprite.row, 4, 4)
+  };
 }
 
 function avatarSelectionSpriteStyle(avatar: (typeof AVATARS)[number], displaySize: number): React.CSSProperties {
@@ -1545,7 +1753,7 @@ function playerAttackRange(snapshot: GameSnapshot, player: GameSnapshot['players
   const zoneBonus = snapshot.powerZones.some((zone) => Math.hypot(zone.position.x - player.position.x, zone.position.y - player.position.y) <= zone.radius)
     ? POWER_ZONE_RANGE_BONUS
     : 0;
-  return (BASE_ATTACK_RANGE + player.inventory.deskParts * DESK_RANGE_BONUS + zoneBonus) * (1 + player.upgrades.range * 0.08);
+  return (BASE_ATTACK_RANGE + zoneBonus) * (1 + player.upgrades.range * 0.1);
 }
 
 function drawGame(
@@ -1556,6 +1764,7 @@ function drawGame(
   camera: Vec2,
   spriteSheet: HTMLImageElement | null,
   propAtlas: HTMLImageElement | null,
+  craftingIcons: HTMLImageElement | null,
   avatarAtlas: HTMLImageElement | null,
   partitionPreview: PartitionPlacement | undefined,
   effects: VisualEffect[]
@@ -1574,10 +1783,16 @@ function drawGame(
     drawSpawnWarning(context, warning);
   }
   for (const resource of snapshot.resources) {
-    drawWorldResource(context, propAtlas, resource.type, resource.position);
+    drawWorldResource(context, propAtlas, craftingIcons, resource.type, resource.position);
+  }
+  for (const station of snapshot.craftingStations) {
+    drawCraftingStation(context, propAtlas, station);
   }
   for (const zone of snapshot.powerZones) {
     drawPowerZone(context, zone);
+  }
+  for (const zone of snapshot.supportZones) {
+    drawSupportZone(context, zone);
   }
   for (const facility of snapshot.facilities) {
     drawWorldFacility(context, propAtlas, facility);
@@ -1641,6 +1856,7 @@ function drawGame(
     context.stroke();
     const visualPlayer = { ...player, position: drawPosition };
     drawEquipmentAuras(context, visualPlayer);
+    drawPlayerSupportEquipment(context, visualPlayer);
     drawPlayerNameplate(context, player.nickname, player.hp, drawPosition, accentColor, player.alive);
     context.globalAlpha = 1;
   }
@@ -1790,25 +2006,47 @@ function drawProjectile(context: CanvasRenderingContext2D, projectile: GameSnaps
     x: projectile.position.x - dir.x * 34,
     y: projectile.position.y - dir.y * 34
   };
+  const color = projectile.variant === 'keyboardShotgun'
+    ? '#f49ac2'
+    : projectile.variant === 'printerCannon'
+      ? '#f7fbfa'
+      : projectile.variant === 'corporateCardBoomerang'
+        ? '#f0c86a'
+        : projectile.variant === 'guardFlashlight'
+          ? '#fff4a3'
+          : '#fff4a3';
+  const glow = projectile.variant === 'printerCannon' ? '#4f5960' : projectile.variant === 'corporateCardBoomerang' ? '#f0c86a' : '#7bdff2';
 
   context.save();
   const gradient = context.createLinearGradient(tail.x, tail.y, projectile.position.x, projectile.position.y);
   gradient.addColorStop(0, 'rgba(123,223,242,0)');
-  gradient.addColorStop(0.4, 'rgba(123,223,242,0.5)');
-  gradient.addColorStop(1, 'rgba(255,244,163,0.95)');
+  gradient.addColorStop(0.4, projectile.variant === 'corporateCardBoomerang' ? 'rgba(240,200,106,0.45)' : 'rgba(123,223,242,0.5)');
+  gradient.addColorStop(1, color);
   context.strokeStyle = gradient;
-  context.lineWidth = 5;
+  context.lineWidth = projectile.variant === 'printerCannon' ? 8 : 5;
   context.lineCap = 'round';
   context.beginPath();
   context.moveTo(tail.x, tail.y);
   context.lineTo(projectile.position.x, projectile.position.y);
   context.stroke();
-  context.fillStyle = '#fff4a3';
-  context.shadowColor = '#7bdff2';
+  context.fillStyle = color;
+  context.shadowColor = glow;
   context.shadowBlur = 10;
-  context.beginPath();
-  context.arc(projectile.position.x, projectile.position.y, 5, 0, Math.PI * 2);
-  context.fill();
+  if (projectile.variant === 'corporateCardBoomerang') {
+    context.translate(projectile.position.x, projectile.position.y);
+    context.rotate(Math.atan2(dir.y, dir.x));
+    context.beginPath();
+    context.roundRect(-9, -5, 18, 10, 3);
+    context.fill();
+  } else if (projectile.variant === 'printerCannon') {
+    context.beginPath();
+    context.arc(projectile.position.x, projectile.position.y, 9, 0, Math.PI * 2);
+    context.fill();
+  } else {
+    context.beginPath();
+    context.arc(projectile.position.x, projectile.position.y, 5, 0, Math.PI * 2);
+    context.fill();
+  }
   context.restore();
 }
 
@@ -1867,6 +2105,7 @@ function drawSpawnWarning(context: CanvasRenderingContext2D, warning: GameSnapsh
 function drawWorldResource(
   context: CanvasRenderingContext2D,
   propAtlas: HTMLImageElement | null,
+  craftingIcons: HTMLImageElement | null,
   type: ResourceType,
   position: Vec2
 ) {
@@ -1887,11 +2126,84 @@ function drawWorldResource(
   context.setLineDash([]);
   context.globalAlpha = 1;
 
-  if (propAtlas) {
+  if (craftingIcons && CRAFTING_ICON_SPRITES[type]) {
+    const icon = CRAFTING_ICON_SPRITES[type];
+    drawAtlasSprite(context, craftingIcons, icon.col, icon.row, 4, 4, { x: position.x, y: position.y + bob }, size * 1.28);
+  } else if (propAtlas && isAtlasResource(type)) {
     drawAtlasSprite(context, propAtlas, sprite.col, sprite.row, 4, 4, { x: position.x, y: position.y + bob }, size);
   } else {
     drawResourceNode(context, type, { x: position.x, y: position.y + bob });
   }
+  context.restore();
+}
+
+function isAtlasResource(type: ResourceType) {
+  return type === 'partitionMaterial';
+}
+
+function drawCraftingStation(context: CanvasRenderingContext2D, propAtlas: HTMLImageElement | null, station: GameSnapshot['craftingStations'][number]) {
+  const { position } = station;
+  const pulse = 0.5 + Math.sin(performance.now() * 0.004 + position.x * 0.01) * 0.5;
+  context.save();
+  if (propAtlas) {
+    drawAtlasSprite(context, propAtlas, 1, 2, 4, 4, position, 132);
+  } else {
+    drawGroundBlob(context, position, 132, 'rgba(23,59,63,0.18)');
+    context.fillStyle = '#b88458';
+    context.strokeStyle = '#203230';
+    context.lineWidth = 3;
+    context.beginPath();
+    context.roundRect(position.x - 58, position.y - 30, 116, 60, 8);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#243d42';
+    context.beginPath();
+    context.roundRect(position.x - 24, position.y - 45, 48, 30, 5);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#7bdff2';
+    context.globalAlpha = 0.82;
+    context.fillRect(position.x - 17, position.y - 39, 34, 18);
+  }
+  context.globalAlpha = 0.28 + pulse * 0.18;
+  context.strokeStyle = '#fff4a3';
+  context.lineWidth = 2;
+  context.setLineDash([8, 8]);
+  context.beginPath();
+  context.arc(position.x, position.y, station.interactionRadius, 0, Math.PI * 2);
+  context.stroke();
+  context.setLineDash([]);
+  context.globalAlpha = 1;
+  context.fillStyle = '#fff4a3';
+  context.font = '900 12px sans-serif';
+  context.textAlign = 'center';
+  context.strokeStyle = 'rgba(23,33,29,0.76)';
+  context.lineWidth = 3;
+  context.strokeText('제작대', position.x, position.y - 58);
+  context.fillText('제작대', position.x, position.y - 58);
+  context.restore();
+}
+
+function drawSupportZone(context: CanvasRenderingContext2D, zone: GameSnapshot['supportZones'][number]) {
+  context.save();
+  const progress = Math.max(0, Math.min(1, zone.ttl / 3));
+  context.globalAlpha = 0.18 + progress * 0.16;
+  context.fillStyle = zone.type === 'mzKeycap' ? '#f49ac2' : '#7bdff2';
+  context.beginPath();
+  context.arc(zone.position.x, zone.position.y, zone.radius, 0, Math.PI * 2);
+  context.fill();
+  context.globalAlpha = 0.92;
+  context.strokeStyle = '#fff4a3';
+  context.lineWidth = 3;
+  context.setLineDash([7, 9]);
+  context.beginPath();
+  context.arc(zone.position.x, zone.position.y, zone.radius * (0.35 + (1 - progress) * 0.65), 0, Math.PI * 2);
+  context.stroke();
+  context.setLineDash([]);
+  context.fillStyle = '#fff4a3';
+  context.font = '900 13px sans-serif';
+  context.textAlign = 'center';
+  context.fillText('ASMR 아님', zone.position.x, zone.position.y - 10);
   context.restore();
 }
 
@@ -1990,24 +2302,52 @@ function drawPowerZone(context: CanvasRenderingContext2D, zone: GameSnapshot['po
 }
 
 function drawEquipmentAuras(context: CanvasRenderingContext2D, player: GameSnapshot['players'][number]) {
-  const chairLevel = player.inventory.chairParts;
-  const now = performance.now() / 1000;
-
+  if (!player.equippedWeapon) return;
   context.save();
-  if (chairLevel > 0) {
-    context.fillStyle = 'rgba(240, 200, 106, 0.86)';
-    context.strokeStyle = 'rgba(23, 59, 63, 0.38)';
-    const count = Math.min(5, 1 + Math.floor(chairLevel / 2));
-    const radius = 42 + chairLevel * 5;
-    for (let i = 0; i < count; i += 1) {
-      const angle = now * 3.4 + (Math.PI * 2 * i) / count;
-      const x = player.position.x + Math.cos(angle) * Math.min(radius, 96);
-      const y = player.position.y + Math.sin(angle) * Math.min(radius, 96);
-      context.beginPath();
-      context.roundRect(x - 8, y - 6, 16, 12, 3);
-      context.fill();
-      context.stroke();
-    }
+  context.globalAlpha = 0.18;
+  context.strokeStyle = '#fff4a3';
+  context.lineWidth = 2;
+  context.beginPath();
+  context.arc(player.position.x, player.position.y + 2, 28, 0, Math.PI * 2);
+  context.stroke();
+  context.restore();
+}
+
+function drawPlayerSupportEquipment(context: CanvasRenderingContext2D, player: GameSnapshot['players'][number]) {
+  const now = performance.now() / 1000;
+  context.save();
+  if (player.equippedSupportEquipment === 'robotVacuumDrone') {
+    const angle = now * 2.6;
+    const x = player.position.x + Math.cos(angle) * 42;
+    const y = player.position.y + Math.sin(angle) * 24 + 8;
+    drawGroundBlob(context, { x, y }, 34, 'rgba(23,59,63,0.16)');
+    context.fillStyle = '#d7e3e4';
+    context.strokeStyle = '#172d31';
+    context.lineWidth = 2.5;
+    context.beginPath();
+    context.ellipse(x, y, 18, 14, angle * 0.2, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#7bdff2';
+    context.beginPath();
+    context.arc(x + Math.cos(angle) * 7, y + Math.sin(angle) * 5, 4, 0, Math.PI * 2);
+    context.fill();
+  }
+  if (player.activeSupportEquipment === 'annualLeaveShield') {
+    const pulse = 0.5 + Math.sin(now * 13) * 0.5;
+    context.globalAlpha = 0.42 + pulse * 0.16;
+    context.strokeStyle = '#f0c86a';
+    context.fillStyle = 'rgba(255,244,163,0.12)';
+    context.lineWidth = 4;
+    context.beginPath();
+    context.arc(player.position.x, player.position.y + 2, 34 + pulse * 5, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.globalAlpha = 0.95;
+    context.font = '900 11px sans-serif';
+    context.textAlign = 'center';
+    context.fillStyle = '#f0c86a';
+    context.fillText('반려', player.position.x, player.position.y - 36);
   }
   context.restore();
 }
@@ -2187,31 +2527,7 @@ function drawResourceNode(context: CanvasRenderingContext2D, type: ResourceType,
   context.strokeStyle = '#172d31';
   context.lineWidth = 2.5;
 
-  if (type === 'chairParts') {
-    context.fillStyle = '#35c7bd';
-    context.beginPath();
-    context.roundRect(-11, -11, 22, 16, 6);
-    context.fill();
-    context.stroke();
-    context.beginPath();
-    context.moveTo(-6, 6);
-    context.lineTo(-8, 14);
-    context.moveTo(6, 6);
-    context.lineTo(8, 14);
-    context.stroke();
-  } else if (type === 'deskParts') {
-    context.fillStyle = '#e6be60';
-    context.beginPath();
-    context.roundRect(-12, -6, 24, 14, 5);
-    context.fill();
-    context.stroke();
-    context.beginPath();
-    context.moveTo(-7, 8);
-    context.lineTo(-9, 14);
-    context.moveTo(7, 8);
-    context.lineTo(9, 14);
-    context.stroke();
-  } else if (type === 'partitionMaterial') {
+  if (type === 'partitionMaterial') {
     context.fillStyle = '#a7debd';
     context.beginPath();
     context.roundRect(-6, -13, 12, 26, 4);
@@ -2221,20 +2537,41 @@ function drawResourceNode(context: CanvasRenderingContext2D, type: ResourceType,
     context.moveTo(0, -13);
     context.lineTo(0, 13);
     context.stroke();
-  } else {
+  } else if (type === 'mixCoffee') {
     context.fillStyle = '#ffffff';
     context.beginPath();
-    context.roundRect(-12, -12, 24, 24, 6);
+    context.roundRect(-10, -13, 20, 26, 6);
     context.fill();
     context.stroke();
-    context.strokeStyle = '#f56e68';
-    context.lineWidth = 5;
+    context.strokeStyle = '#b88458';
+    context.lineWidth = 3;
     context.beginPath();
-    context.moveTo(0, -7);
-    context.lineTo(0, 7);
-    context.moveTo(-7, 0);
-    context.lineTo(7, 0);
+    context.moveTo(-10, -4);
+    context.lineTo(10, -4);
+    context.moveTo(-5, -13);
+    context.lineTo(-2, -19);
+    context.moveTo(4, -13);
+    context.lineTo(7, -19);
     context.stroke();
+  } else {
+    const colors: Record<string, string> = {
+      keycapSet: '#f49ac2',
+      paperBundle: '#f7fbfa',
+      officeMotor: '#6f8580',
+      batteryPack: '#7bdff2',
+      rubberPart: '#8fcf8b',
+      approvalKit: '#f0c86a'
+    };
+    context.fillStyle = colors[type] ?? '#fff4a3';
+    context.beginPath();
+    context.roundRect(-13, -13, 26, 26, 7);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#172d31';
+    context.font = '900 12px sans-serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(materialGlyph(type), 0, 1);
   }
   context.restore();
 }

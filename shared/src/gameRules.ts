@@ -1,40 +1,107 @@
-import type { Facility, FacilityType, ResourceInventory, ResourceType, Vec2, Wall, ZombieType } from './types.js';
+import type {
+  Facility,
+  FacilityType,
+  ResourceInventory,
+  ResourceType,
+  SupportEquipmentType,
+  Vec2,
+  Wall,
+  WeaponType,
+  ZombieType
+} from './types.js';
 
-export const resourceKeys: ResourceType[] = ['chairParts', 'deskParts', 'partitionMaterial', 'medKit'];
+export const resourceKeys: ResourceType[] = [
+  'partitionMaterial',
+  'mixCoffee',
+  'keycapSet',
+  'paperBundle',
+  'officeMotor',
+  'batteryPack',
+  'rubberPart',
+  'approvalKit'
+];
+
+export const usableResourceKeys: ResourceType[] = ['mixCoffee', 'partitionMaterial'];
+export const craftMaterialKeys: ResourceType[] = ['keycapSet', 'paperBundle', 'officeMotor', 'batteryPack', 'rubberPart', 'approvalKit'];
 
 export const facilityKeys: FacilityType[] = ['partitionBarricade', 'deskBarricade', 'medStation'];
 
+export const weaponKeys: WeaponType[] = ['keyboardShotgun', 'printerCannon', 'plunger', 'corporateCardBoomerang', 'guardFlashlight'];
+export const supportEquipmentKeys: SupportEquipmentType[] = ['robotVacuumDrone', 'mzKeycap', 'annualLeaveShield', 'emergencyAed'];
+
 export const RESOURCE_LABELS: Record<ResourceType, string> = {
-  chairParts: '의자',
-  deskParts: '책상',
   partitionMaterial: '파티션',
-  medKit: '구급'
+  mixCoffee: '믹스커피',
+  keycapSet: '키캡',
+  paperBundle: '문서',
+  officeMotor: '모터',
+  batteryPack: '배터리',
+  rubberPart: '고무',
+  approvalKit: '결재'
 };
 
 export const EQUIPMENT_LABELS: Record<ResourceType, string> = {
-  chairParts: '근접 방어',
-  deskParts: '사거리 부품',
   partitionMaterial: '방어 전개',
-  medKit: '소모 회복'
+  mixCoffee: '소모 회복',
+  keycapSet: '제작 재료',
+  paperBundle: '제작 재료',
+  officeMotor: '제작 재료',
+  batteryPack: '제작 재료',
+  rubberPart: '제작 재료',
+  approvalKit: '제작 재료'
 };
 
 export const EQUIPMENT_DESCRIPTIONS: Record<ResourceType, string> = {
-  chairParts: '주변 적을 밀어내고 피해를 줍니다.',
-  deskParts: '공격 사거리와 자동 공격 빈도를 높입니다.',
   partitionMaterial: '사용 시 이동 방향 뒤쪽에 임시 바리케이드를 전개합니다.',
-  medKit: '사용 시 체력을 회복합니다.'
+  mixCoffee: '사용 시 체력을 회복합니다.',
+  keycapSet: '키보드 샷건과 MZ의 키캡 제작에 사용합니다.',
+  paperBundle: '프린터 캐논과 연차 신청서 방패 제작에 사용합니다.',
+  officeMotor: '발사 장치와 로봇청소기 드론 제작에 사용합니다.',
+  batteryPack: '전원이 필요한 장비 제작에 사용합니다.',
+  rubberPart: '뚫어뻥 제작에 사용합니다.',
+  approvalKit: '법인카드 부메랑과 방어 장비 제작에 사용합니다.'
 };
 
 export const FACILITY_LABELS: Record<FacilityType, string> = {
   partitionBarricade: '파티션 바리케이드',
   deskBarricade: '책상 바리케이드',
-  medStation: '구급 거점'
+  medStation: '탕비 거점'
 };
 
 export const FACILITY_COSTS: Record<FacilityType, Partial<ResourceInventory>> = {
-  partitionBarricade: { chairParts: 1, partitionMaterial: 1 },
-  deskBarricade: { deskParts: 2, partitionMaterial: 1 },
-  medStation: { medKit: 1, deskParts: 1 }
+  partitionBarricade: { partitionMaterial: 1, paperBundle: 1 },
+  deskBarricade: { paperBundle: 2, rubberPart: 1 },
+  medStation: { mixCoffee: 1, paperBundle: 1 }
+};
+
+export const WEAPON_LABELS: Record<WeaponType, string> = {
+  keyboardShotgun: '키보드 샷건',
+  printerCannon: '프린터 캐논',
+  plunger: '뚫어뻥',
+  corporateCardBoomerang: '법인카드 부메랑',
+  guardFlashlight: '경비아저씨의 손전등'
+};
+
+export const SUPPORT_EQUIPMENT_LABELS: Record<SupportEquipmentType, string> = {
+  robotVacuumDrone: '로봇청소기 드론',
+  mzKeycap: 'MZ의 키캡',
+  annualLeaveShield: '연차 신청서 방패',
+  emergencyAed: '비상 AED'
+};
+
+export const WEAPON_COSTS: Record<WeaponType, Partial<ResourceInventory>> = {
+  keyboardShotgun: { keycapSet: 3, officeMotor: 1 },
+  printerCannon: { paperBundle: 3, officeMotor: 1 },
+  plunger: { rubberPart: 3 },
+  corporateCardBoomerang: { approvalKit: 2 },
+  guardFlashlight: { batteryPack: 2, approvalKit: 1 }
+};
+
+export const SUPPORT_EQUIPMENT_COSTS: Record<SupportEquipmentType, Partial<ResourceInventory>> = {
+  robotVacuumDrone: { officeMotor: 1, batteryPack: 2 },
+  mzKeycap: { keycapSet: 2, batteryPack: 1 },
+  annualLeaveShield: { paperBundle: 2, approvalKit: 1 },
+  emergencyAed: { batteryPack: 2, officeMotor: 1, rubberPart: 1, approvalKit: 1 }
 };
 
 export const FACILITY_HP: Record<FacilityType, number> = {

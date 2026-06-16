@@ -2,10 +2,13 @@ export type GamePhase = 'lobby' | 'countdown' | 'playing' | 'paused' | 'ended';
 export type GameMode = 'timedSurvival' | 'endless' | 'killTarget';
 export type MapTheme = 'officeGrid' | 'serviceLoop' | 'killArena';
 export type ZombieType = 'normal' | 'runner' | 'tanker';
-export type ResourceType = 'chairParts' | 'deskParts' | 'partitionMaterial' | 'medKit';
+export type CraftMaterialType = 'keycapSet' | 'paperBundle' | 'officeMotor' | 'batteryPack' | 'rubberPart' | 'approvalKit';
+export type ResourceType = 'partitionMaterial' | 'mixCoffee' | CraftMaterialType;
 export type FacilityType = 'partitionBarricade' | 'deskBarricade' | 'medStation';
 export type ResourceInventory = Record<ResourceType, number>;
-export type UpgradeType = 'range' | 'damage' | 'maxHp' | 'moveSpeed' | 'medKit' | 'partition';
+export type UpgradeType = 'range' | 'damage' | 'maxHp' | 'moveSpeed' | 'coffee' | 'partition';
+export type WeaponType = 'keyboardShotgun' | 'printerCannon' | 'plunger' | 'corporateCardBoomerang' | 'guardFlashlight';
+export type SupportEquipmentType = 'robotVacuumDrone' | 'mzKeycap' | 'annualLeaveShield' | 'emergencyAed';
 
 export type UpgradeOption = {
   id: string;
@@ -37,6 +40,13 @@ export type PlayerInput = {
   useItem?: ResourceType;
   useItemRequestId?: number;
   build?: FacilityType;
+  craftWeapon?: WeaponType;
+  equipWeapon?: WeaponType;
+  craftSupport?: SupportEquipmentType;
+  equipSupport?: SupportEquipmentType;
+  activateSupport?: SupportEquipmentType;
+  craftRequestId?: number;
+  supportRequestId?: number;
 };
 
 export type Player = {
@@ -59,6 +69,12 @@ export type Player = {
   pendingUpgradeCount: number;
   upgrades: PlayerUpgrades;
   inventory: ResourceInventory;
+  craftedWeapons: WeaponType[];
+  equippedWeapon?: WeaponType;
+  craftedSupportEquipment: SupportEquipmentType[];
+  equippedSupportEquipment?: SupportEquipmentType;
+  activeSupportEquipment?: SupportEquipmentType;
+  supportExpiresAt?: number;
   resourcesCollected: number;
   facilitiesBuilt: number;
   survivalSec: number;
@@ -85,6 +101,14 @@ export type ResourceNode = {
   position: Vec2;
 };
 
+export type CraftingStation = {
+  id: string;
+  position: Vec2;
+  width: number;
+  height: number;
+  interactionRadius: number;
+};
+
 export type Facility = {
   id: string;
   type: FacilityType;
@@ -108,6 +132,19 @@ export type Projectile = {
   ownerId: string;
   position: Vec2;
   velocity: Vec2;
+  ttl: number;
+  variant?: WeaponType | 'default';
+  damage?: number;
+  radius?: number;
+  pierce?: number;
+};
+
+export type SupportZone = {
+  id: string;
+  ownerId: string;
+  type: SupportEquipmentType;
+  position: Vec2;
+  radius: number;
   ttl: number;
 };
 
@@ -137,8 +174,10 @@ export type GameSnapshot = {
   zombies: Zombie[];
   spawnWarnings: SpawnWarning[];
   resources: ResourceNode[];
+  craftingStations: CraftingStation[];
   facilities: Facility[];
   powerZones: PowerZone[];
+  supportZones: SupportZone[];
   projectiles: Projectile[];
   walls: Wall[];
   feedbackEvents: FeedbackEvent[];
