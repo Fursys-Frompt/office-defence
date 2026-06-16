@@ -590,13 +590,7 @@ function updatePlayers(room: Room, elapsed: number) {
 
     const move = normalize(input.move);
     const speed = player.alive ? playerMoveSpeed(player) : 255;
-    const next = {
-      x: player.position.x + move.x * speed * DT,
-      y: player.position.y + move.y * speed * DT
-    };
-    if (!collidesWithWalls(next, PLAYER_RADIUS, room.walls) && !collidesWithFacilities(room, next, PLAYER_RADIUS)) {
-      player.position = clampToMap(room, next, PLAYER_RADIUS);
-    }
+    player.position = movePlayerWithSlide(room, player.position, move, speed);
     const aim = normalize(input.aim);
     if (length(aim) > 0) player.aim = aim;
 
@@ -1349,6 +1343,39 @@ function clampToMap(room: Room, point: Vec2, radius: number): Vec2 {
     x: clamp(point.x, radius, room.map.width - radius),
     y: clamp(point.y, radius, room.map.height - radius)
   };
+}
+
+function movePlayerWithSlide(room: Room, position: Vec2, direction: Vec2, speed: number) {
+  const step = speed * DT;
+  if (length(direction) <= 0) return position;
+
+  const diagonal = clampToMap(room, {
+    x: position.x + direction.x * step,
+    y: position.y + direction.y * step
+  }, PLAYER_RADIUS);
+  if (canPlayerOccupy(room, diagonal)) return diagonal;
+
+  const xOnly = clampToMap(room, {
+    x: position.x + direction.x * step,
+    y: position.y
+  }, PLAYER_RADIUS);
+  const yOnly = clampToMap(room, {
+    x: position.x,
+    y: position.y + direction.y * step
+  }, PLAYER_RADIUS);
+  const canMoveX = Math.abs(direction.x) > 0.001 && canPlayerOccupy(room, xOnly);
+  const canMoveY = Math.abs(direction.y) > 0.001 && canPlayerOccupy(room, yOnly);
+
+  if (canMoveX && canMoveY) {
+    return Math.abs(direction.x) >= Math.abs(direction.y) ? xOnly : yOnly;
+  }
+  if (canMoveX) return xOnly;
+  if (canMoveY) return yOnly;
+  return position;
+}
+
+function canPlayerOccupy(room: Room, point: Vec2) {
+  return !collidesWithWalls(point, PLAYER_RADIUS, room.walls) && !collidesWithFacilities(room, point, PLAYER_RADIUS);
 }
 
 function moveZombieAroundWalls(room: Room, zombie: Zombie, desired: Vec2, targetPoint: Vec2, speed: number) {
