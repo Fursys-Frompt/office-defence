@@ -1,0 +1,5 @@
+
+> zombie-office-survival@0.1.0 start
+> node dist/server/server/src/index.js
+
+Zombie Office Survival server listening on 3000

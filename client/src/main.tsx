@@ -13,6 +13,7 @@ import type {
   RoomSettings,
   ServerToClientEvents,
   SupportEquipmentType,
+  UpgradeOption,
   Vec2,
   WeaponType
 } from '../../shared/src/types';
@@ -45,6 +46,14 @@ type VisualEffect = Omit<FeedbackEvent, 'type'> & {
 type AudioCue = FeedbackEvent['type'] | 'shoot' | 'melee';
 type TouchControlSide = 'left' | 'right';
 type InstallItem = Extract<ResourceType, 'partitionMaterial'>;
+type TutorialStep = 'move' | 'attack' | 'levelup' | 'collect' | 'craft' | 'complete';
+type TutorialController = {
+  step: TutorialStep;
+  onMove: (move: Vec2) => void;
+  onUpgrade: () => void;
+  onCraft: (weapon: WeaponType) => void;
+  onExit: () => void;
+};
 
 const socket: GameSocket = io();
 const TOUCH_CONTROL_SIDE_KEY = 'zombie-office-survival.touchControlSide';
@@ -68,6 +77,7 @@ const WALK_FRAME_COUNT = 4;
 const MOVEMENT_HOLD_MS = 180;
 const INPUT_SEND_MS = 16;
 const ITEM_INPUT_HOLD_MS = 220;
+const MAX_CRAFT_LEVEL = 5;
 const CAMERA_FOLLOW_AMOUNT = 0.62;
 const LOCAL_PLAYER_FOLLOW_AMOUNT = 0.84;
 const REMOTE_ENTITY_FOLLOW_AMOUNT = 0.36;
@@ -184,10 +194,11 @@ async function copyText(text: string) {
 function resultShareText(snapshot: GameSnapshot, ranking: GameSnapshot['players']) {
   const top = ranking[0];
   const lines = [
-    '오피스 좀비 서바이벌 결과',
-    `${snapshot.roomTitle} · ${snapshot.objective.label} ${objectiveSummary(snapshot.objective)}`,
-    top ? `1위 ${top.nickname} · ${top.score}점 · ${top.kills}처치 · ${top.survivalSec}초 생존` : '',
-    ...ranking.slice(1, 3).map((player, index) => `${index + 2}위 ${player.nickname} · ${player.score}점 · ${player.kills}처치`),
+    '[오피스 좀비 서바이벌 결과]',
+    `${snapshot.roomTitle}`,
+    `${snapshot.objective.label} ${objectiveSummary(snapshot.objective)}`,
+    top ? `1위 ${top.nickname} | ${top.score}점 | ${top.kills}처치 | ${formatDuration(top.survivalSec)} 생존` : '',
+    ...ranking.slice(1, 3).map((player, index) => `${index + 2}위 ${player.nickname} | ${player.score}점 | ${player.kills}처치`),
     roomInviteUrl(snapshot.roomId)
   ].filter(Boolean);
   return lines.join('\n');
@@ -321,6 +332,8 @@ function LobbyApp() {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [pendingAction, setPendingAction] = useState<PendingRoomAction | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(false);
   const [sharePanelOpen, setSharePanelOpen] = useState(false);
   const [inviteStatus, setInviteStatus] = useState('');
   const [shareStatus, setShareStatus] = useState('');
@@ -442,6 +455,10 @@ function LobbyApp() {
     }
   };
 
+  if (tutorialOpen) {
+    return <TutorialGame onExit={() => setTutorialOpen(false)} />;
+  }
+
   if (!snapshot || !me) {
     return (
       <main className="shell intro">
@@ -453,7 +470,7 @@ function LobbyApp() {
           </div>
 
           <div className="lobby-actions">
-            <button type="button" onClick={() => setGuideOpen(true)}>게임 설명</button>
+            <button type="button" onClick={() => setTutorialOpen(true)}>게임 설명</button>
             <button type="button" className="primary" onClick={() => setPendingAction({ mode: 'create' })}>방 생성</button>
           </div>
 
@@ -505,7 +522,15 @@ function LobbyApp() {
           {error && <p className="error">{error}</p>}
         </section>
 
-        {guideOpen && <GameGuideModal onClose={() => setGuideOpen(false)} />}
+        {guideOpen && (
+          <GameGuideModal
+            onClose={() => setGuideOpen(false)}
+            onStartTutorial={() => {
+              setGuideOpen(false);
+              setTutorialOpen(true);
+            }}
+          />
+        )}
         {pendingAction && (
           <ProfileModal
             action={pendingAction}
@@ -541,7 +566,8 @@ function LobbyApp() {
                 <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
               </div>
             </div>
-            <div className="room-header-actions">
+          <div className="room-header-actions">
+              <button type="button" onClick={() => setTutorialOpen(true)}>게임 설명</button>
               <button type="button" onClick={copyInviteLink}>초대 링크</button>
               <button onClick={leaveRoom}>나가기</button>
             </div>
@@ -557,32 +583,22 @@ function LobbyApp() {
           </div>
           {me.host && (
             <div className="settings">
-              <label>
-                최대 인원
-                <input
-                  type="number"
-                  min={2}
-                  max={8}
-                  value={settings.maxPlayers}
-                  onChange={(event) => updateRoomSettings({ ...settings, maxPlayers: Number(event.target.value) })}
-                />
-              </label>
-              <label>
-                게임 모드
-                <select
-                  value={settings.gameMode}
-                  onChange={(event) => updateRoomSettings({ ...settings, gameMode: event.target.value as GameMode })}
-                >
-                  <option value="timedSurvival">제한시간 생존</option>
-                  <option value="endless">무제한</option>
-                  <option value="killTarget">좀비 N마리 처치</option>
-                </select>
-              </label>
-              <label>
-                맵 구조
-                <input value={GAME_MODE_MAP_LABELS[settings.gameMode]} readOnly />
-              </label>
-              {settings.gameMode === 'timedSurvival' && (
+              <div className="settings-primary">
+                <label>
+                  최대 인원
+                  <input
+                    type="number"
+                    min={2}
+                    max={8}
+                    value={settings.maxPlayers}
+                    onChange={(event) => updateRoomSettings({ ...settings, maxPlayers: Number(event.target.value) })}
+                  />
+                </label>
+                <label>
+                  기본 목표
+                  <input value={`${GAME_MODE_LABELS[settings.gameMode]} · ${GAME_MODE_MAP_LABELS[settings.gameMode]}`} readOnly />
+                </label>
+                {settings.gameMode === 'timedSurvival' && (
               <label>
                 플레이 시간(초)
                 <input
@@ -594,8 +610,33 @@ function LobbyApp() {
                   onChange={(event) => updateRoomSettings({ ...settings, gameDurationSec: Number(event.target.value) })}
                 />
               </label>
-              )}
-              {settings.gameMode === 'killTarget' && (
+                )}
+              </div>
+              <button
+                type="button"
+                className="secondary settings-advanced-toggle"
+                onClick={() => setAdvancedSettingsOpen((open) => !open)}
+              >
+                {advancedSettingsOpen ? '고급 설정 닫기' : '고급 설정'}
+              </button>
+              {advancedSettingsOpen && (
+                <div className="settings-advanced">
+                  <label>
+                    게임 모드
+                    <select
+                      value={settings.gameMode}
+                      onChange={(event) => updateRoomSettings({ ...settings, gameMode: event.target.value as GameMode })}
+                    >
+                      <option value="timedSurvival">제한시간 생존</option>
+                      <option value="endless">무제한</option>
+                      <option value="killTarget">좀비 N마리 처치</option>
+                    </select>
+                  </label>
+                  <label>
+                    맵 구조
+                    <input value={GAME_MODE_MAP_LABELS[settings.gameMode]} readOnly />
+                  </label>
+                  {settings.gameMode === 'killTarget' && (
               <label>
                 목표 처치 수
                 <input
@@ -607,16 +648,18 @@ function LobbyApp() {
                   onChange={(event) => updateRoomSettings({ ...settings, killTarget: Number(event.target.value) })}
                 />
               </label>
+                  )}
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.pvpEnabled}
+                      onChange={(event) => updateRoomSettings({ ...settings, pvpEnabled: event.target.checked })}
+                    />
+                    PVP 허용
+                  </label>
+                  <button onClick={() => socket.emit('updateSettings', settings)}>설정 다시 동기화</button>
+                </div>
               )}
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.pvpEnabled}
-                  onChange={(event) => updateRoomSettings({ ...settings, pvpEnabled: event.target.checked })}
-                />
-                PVP 허용
-              </label>
-              <button onClick={() => socket.emit('updateSettings', settings)}>설정 다시 동기화</button>
             </div>
           )}
           <button className="primary" onClick={() => socket.emit('setReady', !me.ready)}>
@@ -632,7 +675,9 @@ function LobbyApp() {
       ? snapshot.results
       : [...snapshot.players].sort((a, b) => b.score - a.score);
     const objective = snapshot.objective;
+    const topPlayer = ranking[0];
     const shareText = resultShareText(snapshot, ranking);
+    const shareLines = shareText.split('\n');
     const shareUrl = roomInviteUrl(snapshot.roomId);
     const shareTargets = externalShareTargets(shareText, shareUrl);
     const saveResultImage = async () => {
@@ -676,36 +721,52 @@ function LobbyApp() {
     };
     return (
       <main className="shell result">
-        <section className="panel">
-          <p className="eyebrow">Game Result</p>
-          <h1>{objective.failed ? '작전 실패' : objective.completed ? '목표 달성' : '생존 순위'}</h1>
-          <p className="result-objective">{objectiveSummary(objective)}</p>
-          <section className="result-card" aria-label="공유 결과 카드">
+        <section className="panel result-panel">
+          <div className="result-header">
             <div>
-              <span>{snapshot.roomTitle}</span>
-              <strong>{objective.label}</strong>
+              <p className="eyebrow">Game Result</p>
+              <h1>{objective.failed ? '작전 실패' : objective.completed ? '목표 달성' : '생존 순위'}</h1>
+              <p className="result-objective">{snapshot.roomTitle} · {objective.label} {objectiveSummary(objective)}</p>
             </div>
-            <h2>{ranking[0] ? `${ranking[0].nickname} 1위` : '결과 없음'}</h2>
-            {ranking[0] && (
-              <div className="result-card-stats">
-                <span>{ranking[0].score}점</span>
-                <span>{ranking[0].kills}처치</span>
-                <span>{ranking[0].survivalSec}초 생존</span>
+            <span className={objective.failed ? 'result-badge failed' : 'result-badge'}>
+              {objective.failed ? '실패' : objective.completed ? '완료' : '종료'}
+            </span>
+          </div>
+
+          <section className="result-summary-grid">
+            <article className="result-card" aria-label="우승자 요약">
+              <div>
+                <span>Top Survivor</span>
+                <strong>{objective.label}</strong>
               </div>
-            )}
-            <p>{objectiveSummary(objective)}</p>
+              <h2>{topPlayer ? `${topPlayer.nickname}` : '결과 없음'}</h2>
+              <p>{topPlayer ? '이번 생존 경쟁 1위' : '기록된 결과가 없습니다.'}</p>
+              {topPlayer && (
+                <div className="result-card-stats">
+                  <span>{topPlayer.score}점</span>
+                  <span>{topPlayer.kills}처치</span>
+                  <span>{formatDuration(topPlayer.survivalSec)} 생존</span>
+                </div>
+              )}
+            </article>
           </section>
-          <div className="ranking">
+
+          <section className="ranking result-ranking" aria-label="최종 랭킹">
+            <div className="ranking-header">
+              <strong>최종 랭킹</strong>
+              <span>{ranking.length}명 참가</span>
+            </div>
             {ranking.map((player, index) => (
-              <div key={player.id} className="rank-row">
+              <div key={player.id} className={`rank-row ${index === 0 ? 'winner' : ''}`}>
                 <strong className="rank-place">{index + 1}</strong>
-                <span>{player.nickname}</span>
+                <span className="rank-name">{player.nickname}</span>
                 <span>{player.score}점</span>
                 <span>{player.kills}처치</span>
-                <span>{player.survivalSec}초 생존</span>
+                <span>{formatDuration(player.survivalSec)} 생존</span>
               </div>
             ))}
-          </div>
+          </section>
+
           <div className="result-actions">
             <button type="button" onClick={shareResult}>공유하기</button>
             <button type="button" onClick={saveResultImage}>이미지 저장</button>
@@ -725,6 +786,11 @@ function LobbyApp() {
                   <h2>공유하기</h2>
                 </div>
                 <button type="button" onClick={() => setSharePanelOpen(false)}>닫기</button>
+              </div>
+              <div className="message-bubble modal-message">
+                {shareLines.map((line, index) => (
+                  <span key={`${index}-${line}`}>{line}</span>
+                ))}
               </div>
               <div className="share-target-grid">
                 {shareTargets.map((target) => (
@@ -753,7 +819,248 @@ function LobbyApp() {
   return <GameView snapshot={snapshot} playerId={playerId} />;
 }
 
-function GameGuideModal({ onClose }: { onClose: () => void }) {
+function TutorialGame({ onExit }: { onExit: () => void }) {
+  const [step, setStep] = useState<TutorialStep>('move');
+  const [playerPosition, setPlayerPosition] = useState<Vec2>({ x: 420, y: 520 });
+  const [collected, setCollected] = useState(false);
+  const [attackConfirmed, setAttackConfirmed] = useState(false);
+  const lastMoveAt = useRef(performance.now());
+
+  useEffect(() => {
+    if (step !== 'attack' || attackConfirmed) return;
+    const timer = window.setTimeout(() => {
+      setAttackConfirmed(true);
+      setStep('levelup');
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [attackConfirmed, step]);
+
+  useEffect(() => {
+    if (step !== 'collect' || collected) return;
+    if (Math.hypot(playerPosition.x - 610, playerPosition.y - 520) > 58) return;
+    setCollected(true);
+    setStep('craft');
+  }, [collected, playerPosition, step]);
+
+  const handleMove = useCallback((move: Vec2) => {
+    if (step === 'complete') return;
+    const normalized = normalizeInputDirection(move);
+    if (!normalized) return;
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(0.012, (now - lastMoveAt.current) / 1000));
+    lastMoveAt.current = now;
+    const speed = 220;
+    if (step === 'move') setStep('attack');
+    setPlayerPosition((position) => ({
+      x: clampClient(position.x + normalized.x * speed * dt, 70, 1530),
+      y: clampClient(position.y + normalized.y * speed * dt, 70, 930)
+    }));
+  }, [step]);
+
+  const handleUpgrade = useCallback(() => {
+    if (step === 'levelup') setStep('collect');
+  }, [step]);
+
+  const handleCraft = useCallback((weapon: WeaponType) => {
+    if (step === 'craft' && weapon === 'keyboardShotgun') setStep('complete');
+  }, [step]);
+
+  const tutorialSnapshot = useMemo(
+    () => makeTutorialSnapshot(step, playerPosition, collected, attackConfirmed),
+    [attackConfirmed, collected, playerPosition, step]
+  );
+
+  return (
+    <GameView
+      snapshot={tutorialSnapshot}
+      playerId="tutorial-player"
+      tutorial={{ step, onMove: handleMove, onUpgrade: handleUpgrade, onCraft: handleCraft, onExit }}
+    />
+  );
+}
+
+function makeTutorialSnapshot(
+  step: TutorialStep,
+  playerPosition: Vec2,
+  collected: boolean,
+  attackConfirmed: boolean
+): GameSnapshot {
+  const inventory = emptyClientInventory();
+  if (collected || step === 'craft' || step === 'complete') {
+    inventory.keycapSet = 3;
+    inventory.officeMotor = 1;
+    inventory.mixCoffee = 1;
+    inventory.partitionMaterial = 1;
+  }
+  const craftedWeapons: WeaponType[] = step === 'complete' ? ['keyboardShotgun'] : [];
+  return {
+    roomId: 'TUTORIAL',
+    roomTitle: '튜토리얼',
+    phase: step === 'complete' ? 'ended' : 'playing',
+    settings: {
+      maxPlayers: 1,
+      gameMode: 'timedSurvival',
+      gameDurationSec: 180,
+      killTarget: 100,
+      pvpEnabled: false
+    },
+    players: [{
+      id: 'tutorial-player',
+      nickname: '튜토리얼',
+      avatarId: 0,
+      ready: true,
+      host: true,
+      alive: true,
+      hp: 100,
+      maxHp: 100,
+      position: playerPosition,
+      aim: { x: 1, y: 0 },
+      score: step === 'complete' ? 120 : collected ? 36 : attackConfirmed ? 20 : 0,
+      kills: attackConfirmed ? 1 : 0,
+      combo: attackConfirmed ? 1 : 0,
+      level: step === 'levelup' || step === 'collect' || step === 'craft' || step === 'complete' ? 2 : 1,
+      nextLevelKills: 3,
+      pendingUpgradeChoices: step === 'levelup' ? tutorialUpgradeChoices() : [],
+      pendingUpgradeCount: step === 'levelup' ? 1 : 0,
+      upgrades: {
+        range: 0,
+        damage: 0,
+        maxHp: 0,
+        moveSpeed: 0,
+        coffee: 0,
+        partition: 0
+      },
+      inventory,
+      craftedWeapons,
+      weaponLevels: step === 'complete' ? { keyboardShotgun: 1 } : {},
+      equippedWeapon: step === 'complete' ? 'keyboardShotgun' : undefined,
+      craftedSupportEquipment: [],
+      supportEquipmentLevels: {},
+      equippedSupportEquipment: undefined,
+      activeSupportEquipment: undefined,
+      resourcesCollected: collected ? 2 : 0,
+      facilitiesBuilt: 0,
+      survivalSec: step === 'complete' ? 18 : 8
+    }],
+    results: [],
+    zombies: step === 'attack' ? [{
+      id: 'tutorial-zombie',
+      type: 'normal',
+      hp: attackConfirmed ? 0 : 18,
+      position: { x: 710, y: 520 }
+    }] : [],
+    spawnWarnings: [],
+    resources: collected || step === 'craft' || step === 'complete'
+      ? []
+      : [
+          { id: 'tutorial-keycap', type: 'keycapSet', position: { x: 610, y: 520 } },
+          { id: 'tutorial-motor', type: 'officeMotor', position: { x: 650, y: 560 } }
+        ],
+    craftingStations: [{
+      id: 'tutorial-craft-station',
+      position: { x: 940, y: 820 },
+      width: 118,
+      height: 78,
+      interactionRadius: 150
+    }],
+    facilities: [],
+    powerZones: [],
+    supportZones: [],
+    projectiles: step === 'attack' ? [{
+      id: 'tutorial-shot',
+      ownerId: 'tutorial-player',
+      position: { x: playerPosition.x + 56, y: playerPosition.y },
+      velocity: { x: 700, y: 0 },
+      ttl: 0.4,
+      variant: 'default',
+      damage: 12,
+      radius: 5,
+      pierce: 0
+    }] : [],
+    walls: [
+      { x: 0, y: 0, width: 1600, height: 24 },
+      { x: 0, y: 976, width: 1600, height: 24 },
+      { x: 0, y: 0, width: 24, height: 1000 },
+      { x: 1576, y: 0, width: 24, height: 1000 },
+      { x: 360, y: 120, width: 22, height: 360 },
+      { x: 720, y: 520, width: 500, height: 22 },
+      { x: 1100, y: 120, width: 300, height: 22 }
+    ],
+    feedbackEvents: step === 'attack' ? [{
+      id: 'tutorial-hit',
+      type: attackConfirmed ? 'kill' : 'hit',
+      position: { x: 710, y: 520 },
+      text: attackConfirmed ? '+10' : 'hit'
+    }] : step === 'collect' || step === 'craft' ? [{
+      id: 'tutorial-collect',
+      type: 'collect',
+      position: { x: 610, y: 520 },
+      text: '재료'
+    }] : [],
+    wave: 1,
+    wavePhase: step === 'craft' || step === 'complete' ? 'break' : 'combat',
+    waveTimeRemaining: step === 'craft' || step === 'complete' ? 15 : 34,
+    countdown: 0,
+    remainingSec: 180,
+    elapsedSec: step === 'complete' ? 18 : collected ? 12 : 6,
+    objective: {
+      mode: 'timedSurvival',
+      label: '튜토리얼',
+      current: step === 'complete' ? 1 : 0,
+      target: 1,
+      completed: step === 'complete',
+      failed: false
+    },
+    map: {
+      width: 1600,
+      height: 1000,
+      name: '분할 사무실',
+      theme: 'officeGrid'
+    }
+  };
+}
+
+function emptyClientInventory(): GameSnapshot['players'][number]['inventory'] {
+  return {
+    partitionMaterial: 0,
+    mixCoffee: 0,
+    keycapSet: 0,
+    paperBundle: 0,
+    officeMotor: 0,
+    batteryPack: 0,
+    rubberPart: 0,
+    approvalKit: 0
+  };
+}
+
+function tutorialUpgradeChoices(): UpgradeOption[] {
+  return [
+    {
+      id: 'tutorial-damage',
+      type: 'damage',
+      title: '집중 타격',
+      description: '기본 공격과 제작 무기 피해가 증가합니다.'
+    },
+    {
+      id: 'tutorial-range',
+      type: 'range',
+      title: '시야 확보',
+      description: '공격 사거리가 증가합니다.'
+    },
+    {
+      id: 'tutorial-move',
+      type: 'moveSpeed',
+      title: '동선 숙달',
+      description: '이동 속도가 조금 증가합니다.'
+    }
+  ];
+}
+
+function clampClient(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function GameGuideModal({ onClose, onStartTutorial }: { onClose: () => void; onStartTutorial: () => void }) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <section className="modal-card guide-modal">
@@ -761,10 +1068,22 @@ function GameGuideModal({ onClose }: { onClose: () => void }) {
           <h2>게임 설명</h2>
           <button type="button" onClick={onClose}>닫기</button>
         </div>
+        <div className="guide-actions">
+          <button type="button" className="primary" onClick={onStartTutorial}>튜토리얼 시작</button>
+        </div>
         <div className="guide-grid">
+          <article className="guide-tutorial">
+            <strong>실제 화면 튜토리얼</strong>
+            <ol>
+              <li>실제 게임 화면에서 WASD로 이동합니다.</li>
+              <li>캔버스 안의 좀비 자동공격을 확인합니다.</li>
+              <li>바닥 재료 쪽으로 이동해 수집합니다.</li>
+              <li>실제 제작 HUD에서 장비를 하나 만듭니다.</li>
+            </ol>
+          </article>
           <article>
             <strong>목표</strong>
-            <p>방장이 선택한 모드에 따라 제한시간 생존, 무제한 생존, 좀비 처치 목표가 적용됩니다. 모드마다 맵 구조가 달라집니다.</p>
+            <p>기본 목표는 제한시간 생존입니다. 무제한 생존과 좀비 처치 목표는 방장이 고급 설정에서 바꿀 수 있습니다.</p>
           </article>
           <article>
             <strong>아이템</strong>
@@ -883,7 +1202,7 @@ function ProfileModal({
   );
 }
 
-function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: string }) {
+function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; playerId: string; tutorial?: TutorialController }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const latestRender = useRef<{ snapshot: GameSnapshot; me: NonNullable<typeof snapshot.players[number]> } | null>(null);
   const pressed = useRef(new Set<string>());
@@ -950,8 +1269,9 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       activateSupport: supportRequest?.type,
       supportRequestId: supportRequest?.requestId
     };
-    socket.emit('input', input);
-  }, []);
+    if (tutorial) tutorial.onMove(move);
+    else socket.emit('input', input);
+  }, [tutorial]);
 
   const queueItemUse = useCallback((type: ResourceType, aim?: Vec2) => {
     itemRequestSeq.current += 1;
@@ -1143,14 +1463,14 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
     return sortCraftEntries(weaponKeys, (weapon) => ({
       crafted: Boolean(me?.craftedWeapons.includes(weapon)),
       equipped: me?.equippedWeapon === weapon,
-      canCraft: Boolean(me && hasCost(me.inventory, WEAPON_COSTS[weapon]))
+      canCraft: Boolean(me && craftLevel(me.weaponLevels, weapon, me.craftedWeapons.includes(weapon)) < MAX_CRAFT_LEVEL && hasCost(me.inventory, WEAPON_COSTS[weapon]))
     }));
   }, [me?.craftedWeapons, me?.equippedWeapon, me?.inventory]);
   const sortedCraftSupport = useMemo(() => {
     return sortCraftEntries(supportEquipmentKeys, (support) => ({
       crafted: Boolean(me?.craftedSupportEquipment.includes(support)),
       equipped: me?.equippedSupportEquipment === support,
-      canCraft: Boolean(me && hasCost(me.inventory, SUPPORT_EQUIPMENT_COSTS[support]))
+      canCraft: Boolean(me && craftLevel(me.supportEquipmentLevels, support, me.craftedSupportEquipment.includes(support)) < MAX_CRAFT_LEVEL && hasCost(me.inventory, SUPPORT_EQUIPMENT_COSTS[support]))
     }));
   }, [me?.craftedSupportEquipment, me?.equippedSupportEquipment, me?.inventory]);
 
@@ -1159,8 +1479,12 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
   }, [pendingChoiceKey, pendingChoices.length]);
 
   const chooseUpgrade = useCallback((upgradeId: string) => {
+    if (tutorial?.step === 'levelup') {
+      tutorial.onUpgrade();
+      return;
+    }
     socket.emit('chooseUpgrade', upgradeId);
-  }, []);
+  }, [tutorial]);
 
   const activateUsableItem = useCallback((resource: ResourceType) => {
     if (isSpectating) return;
@@ -1174,15 +1498,27 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
 
   const craftOrEquipWeapon = useCallback((weapon: WeaponType) => {
     if (isSpectating) return;
-    if (me?.craftedWeapons.includes(weapon)) queueCraftAction({ equipWeapon: weapon });
-    else queueCraftAction({ craftWeapon: weapon });
-  }, [isSpectating, me?.craftedWeapons, queueCraftAction]);
+    if (tutorial?.step === 'craft') {
+      tutorial.onCraft(weapon);
+      return;
+    }
+    const crafted = Boolean(me?.craftedWeapons.includes(weapon));
+    const equipped = me?.equippedWeapon === weapon;
+    const canUpgrade = Boolean(me && craftLevel(me.weaponLevels, weapon, crafted) < MAX_CRAFT_LEVEL && hasCost(me.inventory, WEAPON_COSTS[weapon]));
+    if (crafted && !equipped) queueCraftAction({ equipWeapon: weapon });
+    else if (canUpgrade) queueCraftAction({ craftWeapon: weapon });
+    else if (crafted) queueCraftAction({ equipWeapon: weapon });
+  }, [isSpectating, me, queueCraftAction, tutorial]);
 
   const craftOrEquipSupport = useCallback((support: SupportEquipmentType) => {
     if (isSpectating) return;
-    if (me?.craftedSupportEquipment.includes(support)) queueCraftAction({ equipSupport: support });
-    else queueCraftAction({ craftSupport: support });
-  }, [isSpectating, me?.craftedSupportEquipment, queueCraftAction]);
+    const crafted = Boolean(me?.craftedSupportEquipment.includes(support));
+    const equipped = me?.equippedSupportEquipment === support;
+    const canUpgrade = Boolean(me && craftLevel(me.supportEquipmentLevels, support, crafted) < MAX_CRAFT_LEVEL && hasCost(me.inventory, SUPPORT_EQUIPMENT_COSTS[support]));
+    if (crafted && !equipped) queueCraftAction({ equipSupport: support });
+    else if (canUpgrade) queueCraftAction({ craftSupport: support });
+    else if (crafted) queueCraftAction({ equipSupport: support });
+  }, [isSpectating, me, queueCraftAction]);
 
   return (
     <main className={`game joystick-${touchControlSide}`}>
@@ -1281,6 +1617,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
           <strong>{nearestCraftingStation ? '제작대' : '제작대 밖'}</strong>
           <span>{me?.equippedWeapon ? WEAPON_LABELS[me.equippedWeapon] : '기본 공격'} · {me?.equippedSupportEquipment ? SUPPORT_EQUIPMENT_LABELS[me.equippedSupportEquipment] : '보조 없음'}</span>
         </div>
+        {nearestCraftingStation && !isSpectating ? (
         <div className="material-row">
           {craftMaterialKeys.map((resource) => (
             <span key={resource} className={(me?.inventory[resource] ?? 0) > 0 ? 'has' : ''}>
@@ -1295,12 +1632,16 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
             </span>
           ))}
         </div>
+        ) : (
+          <p className="crafting-hint">재료를 줍고 제작대에 가까이 가면 무기와 보조장비를 만들 수 있습니다.</p>
+        )}
         {nearestCraftingStation && !isSpectating && (
           <div className="crafting-list">
             {sortedCraftWeapons.map((weapon) => {
               const crafted = Boolean(me?.craftedWeapons.includes(weapon));
               const equipped = me?.equippedWeapon === weapon;
-              const canCraft = Boolean(me && hasCost(me.inventory, WEAPON_COSTS[weapon]));
+              const level = craftLevel(me?.weaponLevels, weapon, crafted);
+              const canCraft = Boolean(me && level < MAX_CRAFT_LEVEL && hasCost(me.inventory, WEAPON_COSTS[weapon]));
               return (
                 <button
                   key={weapon}
@@ -1312,15 +1653,16 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
                   <i
                     style={craftingIconStyle(weapon)}
                   />
-                  <strong>{WEAPON_LABELS[weapon]}</strong>
-                  <span>{crafted ? equipped ? '장착 중' : '장착' : costText(WEAPON_COSTS[weapon])}</span>
+                  <strong>{WEAPON_LABELS[weapon]}{level > 0 ? ` +${level}` : ''}</strong>
+                  <span>{crafted ? equipped ? canCraft ? `강화 ${costText(WEAPON_COSTS[weapon])}` : '장착 중' : '장착' : costText(WEAPON_COSTS[weapon])}</span>
                 </button>
               );
             })}
             {sortedCraftSupport.map((support) => {
               const crafted = Boolean(me?.craftedSupportEquipment.includes(support));
               const equipped = me?.equippedSupportEquipment === support;
-              const canCraft = Boolean(me && hasCost(me.inventory, SUPPORT_EQUIPMENT_COSTS[support]));
+              const level = craftLevel(me?.supportEquipmentLevels, support, crafted);
+              const canCraft = Boolean(me && level < MAX_CRAFT_LEVEL && hasCost(me.inventory, SUPPORT_EQUIPMENT_COSTS[support]));
               return (
                 <button
                   key={support}
@@ -1332,8 +1674,8 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
                   <i
                     style={craftingIconStyle(support)}
                   />
-                  <strong>{SUPPORT_EQUIPMENT_LABELS[support]}</strong>
-                  <span>{crafted ? equipped ? '장착 중' : '장착' : costText(SUPPORT_EQUIPMENT_COSTS[support])}</span>
+                  <strong>{SUPPORT_EQUIPMENT_LABELS[support]}{level > 0 ? ` +${level}` : ''}</strong>
+                  <span>{crafted ? equipped ? canCraft ? `강화 ${costText(SUPPORT_EQUIPMENT_COSTS[support])}` : '장착 중' : '장착' : costText(SUPPORT_EQUIPMENT_COSTS[support])}</span>
                 </button>
               );
             })}
@@ -1404,7 +1746,7 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       )}
       <section className="hud mission-hud top-right">
         <span className="objective-chip"><strong>{snapshot.objective.label}</strong> {objectiveSummary(snapshot.objective)}</span>
-        <span>웨이브 <b>{snapshot.wave}</b></span>
+        <span>웨이브 <b>{snapshot.wave}</b> · {snapshot.wavePhase === 'break' ? '제작 시간' : '전투'} {snapshot.waveTimeRemaining}초</span>
         <span>경과 <b>{formatDuration(snapshot.elapsedSec)}</b></span>
         <span>Lv <b>{me?.level ?? 1}</b></span>
         <span>다음 {me ? Math.max(0, me.nextLevelKills - me.kills) : 0}킬</span>
@@ -1480,7 +1822,66 @@ function GameView({ snapshot, playerId }: { snapshot: GameSnapshot; playerId: st
       <div className="touch-affordance" aria-hidden="true">
         <span />
       </div>
+      {tutorial && (
+        <TutorialOverlay
+          step={tutorial.step}
+          onExit={tutorial.onExit}
+        />
+      )}
     </main>
+  );
+}
+
+function TutorialOverlay({ step, onExit }: { step: TutorialStep; onExit: () => void }) {
+  const stepIndex = step === 'complete' ? 5 : ['move', 'attack', 'levelup', 'collect', 'craft'].indexOf(step);
+  return (
+    <>
+      {step !== 'complete' && <div className={`tutorial-focus tutorial-focus-${step}`} aria-hidden="true" />}
+      <section className="tutorial-step-card actual-tutorial-card" aria-live="polite">
+        <div className="tutorial-progress">
+          {['이동', '공격', '레벨업', '수집', '제작'].map((label, index) => (
+            <span key={label} className={index <= stepIndex ? 'active' : ''}>{label}</span>
+          ))}
+        </div>
+        {step === 'move' && (
+          <>
+            <strong>1. 실제 조작으로 이동</strong>
+            <p>WASD 또는 방향키를 누르면 실제 게임 화면의 캐릭터가 움직입니다.</p>
+          </>
+        )}
+        {step === 'attack' && (
+          <>
+            <strong>2. 자동공격 확인</strong>
+            <p>가까운 좀비가 자동으로 타깃이 됩니다. 잠시 기다리면 처치가 확인됩니다.</p>
+          </>
+        )}
+        {step === 'levelup' && (
+          <>
+            <strong>3. 레벨업 선택</strong>
+            <p>실제 게임처럼 레벨업 선택지가 열렸습니다. 원하는 업그레이드 하나를 고르세요.</p>
+          </>
+        )}
+        {step === 'collect' && (
+          <>
+            <strong>4. 재료 줍기</strong>
+            <p>캔버스 안의 재료 쪽으로 이동하세요. 실제 게임처럼 가까이 가면 수집됩니다.</p>
+          </>
+        )}
+        {step === 'craft' && (
+          <>
+            <strong>5. 제작대로 이동 후 장비 제작</strong>
+            <p>오른쪽 아래 제작대로 직접 이동하세요. 가까이 가면 실제 제작 HUD가 열리고 키보드 샷건을 만들 수 있습니다.</p>
+          </>
+        )}
+        {step === 'complete' && (
+          <>
+            <strong>튜토리얼 완료</strong>
+            <p>실제 게임과 같은 HUD 흐름으로 이동, 자동공격, 수집, 제작을 확인했습니다.</p>
+            <button type="button" className="primary" onClick={onExit}>로비로 돌아가기</button>
+          </>
+        )}
+      </section>
+    </>
   );
 }
 
@@ -1506,10 +1907,14 @@ function sortCraftEntries<T>(entries: readonly T[], getState: (entry: T) => { cr
 }
 
 function craftSortScore(state: { crafted: boolean; equipped: boolean; canCraft: boolean }) {
-  if (!state.crafted && state.canCraft) return 0;
+  if (state.canCraft) return 0;
   if (state.equipped) return 1;
   if (state.crafted) return 2;
   return 3;
+}
+
+function craftLevel<T extends string>(levels: Partial<Record<T, number>> | undefined, type: T, fallbackOwned: boolean) {
+  return Math.max(fallbackOwned ? 1 : 0, levels?.[type] ?? 0);
 }
 
 function hasCost(inventory: GameSnapshot['players'][number]['inventory'], cost: Partial<Record<ResourceType, number>>) {

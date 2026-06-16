@@ -9,6 +9,7 @@ export type ResourceInventory = Record<ResourceType, number>;
 export type UpgradeType = 'range' | 'damage' | 'maxHp' | 'moveSpeed' | 'coffee' | 'partition';
 export type WeaponType = 'keyboardShotgun' | 'printerCannon' | 'plunger' | 'corporateCardBoomerang' | 'guardFlashlight';
 export type SupportEquipmentType = 'robotVacuumDrone' | 'mzKeycap' | 'annualLeaveShield' | 'emergencyAed';
+export type WavePhase = 'combat' | 'break';
 
 export type UpgradeOption = {
   id: string;
@@ -70,8 +71,10 @@ export type Player = {
   upgrades: PlayerUpgrades;
   inventory: ResourceInventory;
   craftedWeapons: WeaponType[];
+  weaponLevels: Partial<Record<WeaponType, number>>;
   equippedWeapon?: WeaponType;
   craftedSupportEquipment: SupportEquipmentType[];
+  supportEquipmentLevels: Partial<Record<SupportEquipmentType, number>>;
   equippedSupportEquipment?: SupportEquipmentType;
   activeSupportEquipment?: SupportEquipmentType;
   supportExpiresAt?: number;
@@ -182,6 +185,8 @@ export type GameSnapshot = {
   walls: Wall[];
   feedbackEvents: FeedbackEvent[];
   wave: number;
+  wavePhase: WavePhase;
+  waveTimeRemaining: number;
   countdown: number;
   remainingSec: number;
   elapsedSec: number;

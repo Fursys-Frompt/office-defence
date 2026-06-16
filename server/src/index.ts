@@ -27,6 +27,7 @@ import type {
   UpgradeOption,
   UpgradeType,
   Vec2,
+  WavePhase,
   Wall,
   WeaponType,
   Zombie,
@@ -63,6 +64,8 @@ type Room = {
   projectiles: GameSnapshot['projectiles'];
   feedbackEvents: Array<FeedbackEvent & { ttl: number }>;
   wave: number;
+  wavePhase: WavePhase;
+  waveTimer: number;
   countdown: number;
   remainingSec: number;
   endedElapsedSec: number;
@@ -116,6 +119,9 @@ const POWER_ZONE_TTL = 8;
 const POWER_ZONE_DAMAGE_BONUS = 0.35;
 const POWER_ZONE_RANGE_BONUS = 110;
 const ZOMBIE_SPAWN_WARNING_SEC = 1.25;
+const WAVE_COMBAT_SEC = 35;
+const WAVE_BREAK_SEC = 15;
+const MAX_CRAFT_LEVEL = 5;
 const RESOURCE_DROP_WEIGHTS: Array<{ type: ResourceType; weight: number }> = [
   { type: 'partitionMaterial', weight: 22 },
   { type: 'mixCoffee', weight: 12 },
@@ -277,6 +283,8 @@ function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string
     projectiles: [],
     feedbackEvents: [],
     wave: 1,
+    wavePhase: 'combat',
+    waveTimer: WAVE_COMBAT_SEC,
     countdown: 0,
     remainingSec: sanitizedSettings.gameMode === 'endless' ? 0 : sanitizedSettings.gameDurationSec,
     endedElapsedSec: 0,
@@ -383,8 +391,10 @@ function createPlayer(id: string, nickname: string, host: boolean, avatarId = 0)
     upgrades: emptyUpgrades(),
     inventory: emptyInventory(),
     craftedWeapons: [],
+    weaponLevels: {},
     equippedWeapon: undefined,
     craftedSupportEquipment: [],
+    supportEquipmentLevels: {},
     equippedSupportEquipment: undefined,
     activeSupportEquipment: undefined,
     supportExpiresAt: undefined,
@@ -442,6 +452,8 @@ function snapshot(room: Room): GameSnapshot {
     walls: room.walls,
     feedbackEvents: room.feedbackEvents.map(({ ttl: _ttl, ...event }) => event),
     wave: room.wave,
+    wavePhase: room.wavePhase,
+    waveTimeRemaining: Math.max(0, Math.ceil(room.waveTimer)),
     countdown: Math.ceil(room.countdown),
     remainingSec: room.settings.gameMode === 'endless' ? 0 : Math.max(0, Math.ceil(room.remainingSec)),
     elapsedSec: Math.max(0, Math.floor(elapsedSec)),
@@ -559,6 +571,8 @@ function startCountdown(room: Room) {
 function startGame(room: Room) {
   room.phase = 'playing';
   room.wave = 1;
+  room.wavePhase = 'combat';
+  room.waveTimer = WAVE_COMBAT_SEC;
   room.remainingSec = room.settings.gameMode === 'endless' ? 0 : room.settings.gameDurationSec;
   room.endedElapsedSec = 0;
   room.startedAt = Date.now();
@@ -604,8 +618,10 @@ function startGame(room: Room) {
     player.upgrades = emptyUpgrades();
     player.inventory = emptyInventory();
     player.craftedWeapons = [];
+    player.weaponLevels = {};
     player.equippedWeapon = undefined;
     player.craftedSupportEquipment = [];
+    player.supportEquipmentLevels = {};
     player.equippedSupportEquipment = undefined;
     player.activeSupportEquipment = undefined;
     player.supportExpiresAt = undefined;
@@ -655,7 +671,7 @@ function tickRoom(room: Room) {
 
   if (room.settings.gameMode !== 'endless') room.remainingSec -= DT;
   const elapsed = elapsedSeconds(room);
-  room.wave = 1 + Math.floor(elapsed / 24);
+  updateWaveCycle(room);
   updatePowerZones(room);
   updatePlayers(room, elapsed);
   updateProjectiles(room);
@@ -665,6 +681,29 @@ function tickRoom(room: Room) {
   applySurvivalScore(room, elapsed);
 
   if (shouldEndGame(room)) endGame(room);
+}
+
+function updateWaveCycle(room: Room) {
+  room.waveTimer -= DT;
+  if (room.waveTimer > 0) return;
+
+  if (room.wavePhase === 'combat') {
+    room.wavePhase = 'break';
+    room.waveTimer = WAVE_BREAK_SEC;
+    room.zombies = [];
+    room.spawnWarnings = [];
+    clearZombieAiTimers(room);
+    room.nextZombieSpawnAt = 0;
+    room.nextResourceSpawnAt = Math.min(room.nextResourceSpawnAt, 0.6);
+    pushFeedback(room, 'build', { x: room.map.width / 2, y: room.map.height / 2 }, '제작 시간', 0.2);
+    return;
+  }
+
+  room.wave += 1;
+  room.wavePhase = 'combat';
+  room.waveTimer = WAVE_COMBAT_SEC;
+  room.nextZombieSpawnAt = 0.75;
+  pushFeedback(room, 'build', { x: room.map.width / 2, y: room.map.height / 2 }, `WAVE ${room.wave}`, 0.2);
 }
 
 function updatePlayers(room: Room, elapsed: number) {
@@ -776,17 +815,19 @@ function processSupportInput(room: Room, player: Player, input: PlayerInput) {
 }
 
 function craftWeapon(room: Room, player: Player, weapon: WeaponType) {
-  if (player.craftedWeapons.includes(weapon)) {
-    equipWeapon(player, weapon);
-    return;
-  }
   if (!isNearCraftingStation(room, player)) return;
   const cost = WEAPON_COSTS[weapon];
   if (!cost || !hasResources(player.inventory, cost)) return;
+  const currentLevel = equipmentLevel(player.weaponLevels, weapon, player.craftedWeapons.includes(weapon));
+  if (currentLevel >= MAX_CRAFT_LEVEL) {
+    equipWeapon(player, weapon);
+    return;
+  }
   spendResources(player.inventory, cost);
-  player.craftedWeapons.push(weapon);
+  if (!player.craftedWeapons.includes(weapon)) player.craftedWeapons.push(weapon);
+  player.weaponLevels[weapon] = currentLevel + 1;
   player.equippedWeapon = weapon;
-  pushFeedback(room, 'build', player.position, weaponFeedbackLabel(weapon));
+  pushFeedback(room, 'build', player.position, `${weaponFeedbackLabel(weapon)} +${player.weaponLevels[weapon]}`);
 }
 
 function equipWeapon(player: Player, weapon: WeaponType) {
@@ -795,17 +836,19 @@ function equipWeapon(player: Player, weapon: WeaponType) {
 }
 
 function craftSupportEquipment(room: Room, player: Player, support: SupportEquipmentType) {
-  if (player.craftedSupportEquipment.includes(support)) {
-    equipSupportEquipment(player, support);
-    return;
-  }
   if (!isNearCraftingStation(room, player)) return;
   const cost = SUPPORT_EQUIPMENT_COSTS[support];
   if (!cost || !hasResources(player.inventory, cost)) return;
+  const currentLevel = equipmentLevel(player.supportEquipmentLevels, support, player.craftedSupportEquipment.includes(support));
+  if (currentLevel >= MAX_CRAFT_LEVEL) {
+    equipSupportEquipment(player, support);
+    return;
+  }
   spendResources(player.inventory, cost);
-  player.craftedSupportEquipment.push(support);
+  if (!player.craftedSupportEquipment.includes(support)) player.craftedSupportEquipment.push(support);
+  player.supportEquipmentLevels[support] = currentLevel + 1;
   player.equippedSupportEquipment = support;
-  pushFeedback(room, 'build', player.position, supportFeedbackLabel(support));
+  pushFeedback(room, 'build', player.position, `${supportFeedbackLabel(support)} +${player.supportEquipmentLevels[support]}`);
 }
 
 function equipSupportEquipment(player: Player, support: SupportEquipmentType) {
@@ -816,10 +859,11 @@ function equipSupportEquipment(player: Player, support: SupportEquipmentType) {
 function activateSupportEquipment(room: Room, player: Player, support: SupportEquipmentType) {
   if (player.equippedSupportEquipment !== support || !player.craftedSupportEquipment.includes(support)) return;
   if (support === 'robotVacuumDrone' || support === 'emergencyAed') return;
-  const cooldown = support === 'mzKeycap' ? 8 : 10;
+  const level = supportLevel(player, support);
+  const cooldown = Math.max(4.5, (support === 'mzKeycap' ? 8 : 10) - (level - 1) * 0.7);
   if (!canAct(room, player.id, `support:${support}`, cooldown)) return;
   player.activeSupportEquipment = support;
-  player.supportExpiresAt = elapsedSeconds(room) + (support === 'mzKeycap' ? 3 : 3.5);
+  player.supportExpiresAt = elapsedSeconds(room) + (support === 'mzKeycap' ? 3 : 3.5) + (level - 1) * 0.35;
   if (support === 'mzKeycap') {
     const position = {
       x: player.position.x + player.aim.x * 78,
@@ -830,8 +874,8 @@ function activateSupportEquipment(room: Room, player: Player, support: SupportEq
       ownerId: player.id,
       type: support,
       position: clampToMap(room, position, 24),
-      radius: 190,
-      ttl: 3
+      radius: 190 + (level - 1) * 22,
+      ttl: 3 + (level - 1) * 0.35
     });
     pushFeedback(room, 'build', position, '시끌');
   } else {
@@ -858,18 +902,38 @@ function supportFeedbackLabel(support: SupportEquipmentType) {
   return '연차';
 }
 
+function equipmentLevel<T extends string>(levels: Partial<Record<T, number>> | undefined, type: T, fallbackOwned: boolean) {
+  return Math.max(fallbackOwned ? 1 : 0, levels?.[type] ?? 0);
+}
+
+function weaponLevel(player: Player, weapon?: WeaponType) {
+  if (!weapon) return 0;
+  return equipmentLevel(player.weaponLevels, weapon, player.craftedWeapons.includes(weapon));
+}
+
+function supportLevel(player: Player, support?: SupportEquipmentType) {
+  if (!support) return 0;
+  return equipmentLevel(player.supportEquipmentLevels, support, player.craftedSupportEquipment.includes(support));
+}
+
+function craftPower(level: number) {
+  return 1 + Math.max(0, level - 1) * 0.18;
+}
+
 function weaponCooldown(player: Player) {
   const comboBoost = player.combo >= 5 ? 0.9 : 1;
-  if (player.equippedWeapon === 'keyboardShotgun') return 1.05 * comboBoost;
-  if (player.equippedWeapon === 'printerCannon') return 1.65 * comboBoost;
-  if (player.equippedWeapon === 'plunger') return 0.9 * comboBoost;
-  if (player.equippedWeapon === 'corporateCardBoomerang') return 1.25 * comboBoost;
-  if (player.equippedWeapon === 'guardFlashlight') return 1.4 * comboBoost;
+  const levelBoost = 1 - Math.max(0, weaponLevel(player, player.equippedWeapon) - 1) * 0.04;
+  if (player.equippedWeapon === 'keyboardShotgun') return 1.05 * comboBoost * levelBoost;
+  if (player.equippedWeapon === 'printerCannon') return 1.65 * comboBoost * levelBoost;
+  if (player.equippedWeapon === 'plunger') return 0.9 * comboBoost * levelBoost;
+  if (player.equippedWeapon === 'corporateCardBoomerang') return 1.25 * comboBoost * levelBoost;
+  if (player.equippedWeapon === 'guardFlashlight') return 1.4 * comboBoost * levelBoost;
   return player.combo >= 5 ? 0.44 : 0.52;
 }
 
 function fireEquippedWeapon(room: Room, player: Player) {
   const weapon = player.equippedWeapon;
+  if (hitOverlappingTarget(room, player)) return;
   if (!weapon) {
     const attackRange = playerAttackRange(room, player);
     room.projectiles.push({
@@ -882,18 +946,22 @@ function fireEquippedWeapon(room: Room, player: Player) {
     });
     return;
   }
+  const level = weaponLevel(player, weapon);
+  const power = craftPower(level);
 
   if (weapon === 'keyboardShotgun') {
-    for (let i = -2; i <= 2; i += 1) {
-      const dir = rotate(player.aim, i * 0.16);
+    const pelletCount = 5 + Math.floor((level - 1) / 2) * 2;
+    const center = (pelletCount - 1) / 2;
+    for (let i = 0; i < pelletCount; i += 1) {
+      const dir = rotate(player.aim, (i - center) * 0.14);
       room.projectiles.push({
         id: makeId('keycap'),
         ownerId: player.id,
         position: { ...player.position },
         velocity: { x: dir.x * PROJECTILE_SPEED, y: dir.y * PROJECTILE_SPEED },
-        ttl: 240 / PROJECTILE_SPEED,
+        ttl: (240 + (level - 1) * 18) / PROJECTILE_SPEED,
         variant: weapon,
-        damage: 12 + player.upgrades.damage * 1.4
+        damage: (12 + player.upgrades.damage * 1.4) * power
       });
     }
     return;
@@ -905,16 +973,16 @@ function fireEquippedWeapon(room: Room, player: Player) {
       ownerId: player.id,
       position: { ...player.position },
       velocity: { x: player.aim.x * 520, y: player.aim.y * 520 },
-      ttl: 380 / 520,
+      ttl: (380 + (level - 1) * 20) / 520,
       variant: weapon,
-      damage: 58 + player.upgrades.damage * 2,
-      radius: 70
+      damage: (58 + player.upgrades.damage * 2) * power,
+      radius: 70 + (level - 1) * 8
     });
     return;
   }
 
   if (weapon === 'plunger') {
-    hitTargetsInCone(room, player, 92, 0.74, 42 + player.upgrades.damage * 2.5, 58);
+    hitTargetsInCone(room, player, 92 + (level - 1) * 10, 0.74, (42 + player.upgrades.damage * 2.5) * power, 58 + (level - 1) * 8);
     pushFeedback(room, 'hit', {
       x: player.position.x + player.aim.x * 54,
       y: player.position.y + player.aim.y * 54
@@ -931,8 +999,8 @@ function fireEquippedWeapon(room: Room, player: Player) {
       velocity: { x: dir.x * 620, y: dir.y * 620 },
       ttl: 310 / 620,
       variant: weapon,
-      damage: 28 + player.upgrades.damage * 1.8,
-      pierce: 3
+      damage: (28 + player.upgrades.damage * 1.8) * power,
+      pierce: 3 + Math.floor((level - 1) / 2)
     });
     room.projectiles.push({
       id: makeId('cardBack'),
@@ -944,19 +1012,39 @@ function fireEquippedWeapon(room: Room, player: Player) {
       velocity: { x: -dir.x * 620, y: -dir.y * 620 },
       ttl: 250 / 620,
       variant: weapon,
-      damage: 28 + player.upgrades.damage * 1.8,
-      pierce: 3
+      damage: (28 + player.upgrades.damage * 1.8) * power,
+      pierce: 3 + Math.floor((level - 1) / 2)
     });
     return;
   }
 
   if (weapon === 'guardFlashlight') {
-    hitTargetsInCone(room, player, 300, 0.26, 18 + player.upgrades.damage * 1.5, 0);
+    hitTargetsInCone(room, player, 300 + (level - 1) * 28, 0.26 + (level - 1) * 0.025, (18 + player.upgrades.damage * 1.5) * power, 0);
     pushFeedback(room, 'hit', {
       x: player.position.x + player.aim.x * 150,
       y: player.position.y + player.aim.y * 150
     }, '눈뽕', 0.12);
   }
+}
+
+function hitOverlappingTarget(room: Room, player: Player) {
+  const overlapRange = PLAYER_RADIUS + ZOMBIE_RADIUS + 4;
+  const zombie = room.zombies
+    .filter((candidate) => distance(player.position, candidate.position) <= overlapRange)
+    .sort((a, b) => distance(player.position, a.position) - distance(player.position, b.position))[0];
+  if (zombie) {
+    damageZombie(room, zombie, rangedDamage(room, player), player.id);
+    pushFeedback(room, 'hit', zombie.position, '근접', 0.08);
+    return true;
+  }
+  if (!room.settings.pvpEnabled) return false;
+  const target = [...room.players.values()]
+    .filter((candidate) => candidate.id !== player.id && candidate.alive && distance(player.position, candidate.position) <= PLAYER_RADIUS * 2)
+    .sort((a, b) => distance(player.position, a.position) - distance(player.position, b.position))[0];
+  if (!target) return false;
+  damagePlayer(room, target, rangedDamage(room, player), player);
+  pushFeedback(room, 'hit', target.position, '근접', 0.08);
+  return true;
 }
 
 function updatePowerZones(room: Room) {
@@ -1114,11 +1202,12 @@ function updateSupportEquipment(room: Room, player: Player, elapsed: number) {
     player.supportExpiresAt = undefined;
   }
   if (player.equippedSupportEquipment !== 'robotVacuumDrone') return;
-  if (!canEquipmentAct(room, player.id, 'vacuumDrone', 0.95)) return;
-  const targets = nearestAutoAttackTargets(room, player, 1, 160);
+  const level = supportLevel(player, 'robotVacuumDrone');
+  if (!canEquipmentAct(room, player.id, 'vacuumDrone', Math.max(0.55, 0.95 - (level - 1) * 0.07))) return;
+  const targets = nearestAutoAttackTargets(room, player, 1, 160 + (level - 1) * 18);
   const target = targets[0];
   if (!target) return;
-  damageAutoAttackTarget(room, target, 16 + player.upgrades.damage, player);
+  damageAutoAttackTarget(room, target, (16 + player.upgrades.damage) * craftPower(level), player);
   pushFeedback(room, 'hit', target.position, '위잉', 0.16);
 }
 
@@ -1247,7 +1336,10 @@ function registerKillTargetProgress(room: Room, player: Player) {
 function damagePlayer(room: Room, target: Player, damage: number, attacker?: Player) {
   if (!target.alive) return;
   const reduction = Math.min(0.18, target.upgrades.maxHp * 0.025);
-  const shieldReduction = target.activeSupportEquipment === 'annualLeaveShield' && (target.supportExpiresAt ?? 0) > elapsedSeconds(room) ? 0.45 : 0;
+  const shieldLevel = supportLevel(target, 'annualLeaveShield');
+  const shieldReduction = target.activeSupportEquipment === 'annualLeaveShield' && (target.supportExpiresAt ?? 0) > elapsedSeconds(room)
+    ? Math.min(0.72, 0.45 + Math.max(0, shieldLevel - 1) * 0.06)
+    : 0;
   const effectiveDamage = damage * (1 - reduction) * (1 - shieldReduction);
   target.hp -= effectiveDamage;
   recordRecentDamage(room, target.id, effectiveDamage);
@@ -1263,13 +1355,19 @@ function damagePlayer(room: Room, target: Player, damage: number, attacker?: Pla
 function consumeEmergencyAed(room: Room, player: Player) {
   const index = player.craftedSupportEquipment.indexOf('emergencyAed');
   if (index < 0) return false;
-  player.craftedSupportEquipment.splice(index, 1);
-  if (player.equippedSupportEquipment === 'emergencyAed') player.equippedSupportEquipment = undefined;
+  const level = supportLevel(player, 'emergencyAed');
+  if (level <= 1) {
+    player.craftedSupportEquipment.splice(index, 1);
+    delete player.supportEquipmentLevels.emergencyAed;
+    if (player.equippedSupportEquipment === 'emergencyAed') player.equippedSupportEquipment = undefined;
+  } else {
+    player.supportEquipmentLevels.emergencyAed = level - 1;
+  }
   if (player.activeSupportEquipment === 'emergencyAed') {
     player.activeSupportEquipment = undefined;
     player.supportExpiresAt = undefined;
   }
-  player.hp = Math.max(1, Math.round(player.maxHp * 0.32));
+  player.hp = Math.max(1, Math.round(player.maxHp * (0.32 + Math.max(0, level - 1) * 0.08)));
   pushFeedback(room, 'heal', player.position, 'AED');
   return true;
 }
@@ -1346,7 +1444,7 @@ function spawnWorld(room: Room, elapsed: number) {
   room.nextReliefSupplyAt -= DT;
   const director = getDirectorState(room, elapsed);
   updateSpawnWarnings(room);
-  if (room.nextZombieSpawnAt <= 0) {
+  if (room.wavePhase === 'combat' && room.nextZombieSpawnAt <= 0) {
     const pressure = Math.floor(elapsed / 30);
     const baseCount = 3 + Math.ceil(room.wave * 1.05) + Math.floor(pressure * 1.05) + Math.max(0, director.aliveCount - 1) * 1.55;
     const easedCount = baseCount * (1 - director.earlyEase * 0.25) * (1 - director.relief * 0.38) * director.playerScale;
@@ -1368,7 +1466,9 @@ function spawnWorld(room: Room, elapsed: number) {
   const resourceLimit = MAP_PRESETS[room.settings.gameMode].resourceLimit;
   if (room.nextResourceSpawnAt <= 0 && room.resources.length < resourceLimit) {
     room.resources.push(createResource(room, director));
-    room.nextResourceSpawnAt = 4.2 + Math.random() * 5.0 - director.relief * 1.5;
+    room.nextResourceSpawnAt = room.wavePhase === 'break'
+      ? 2.0 + Math.random() * 2.6
+      : 4.2 + Math.random() * 5.0 - director.relief * 1.5;
   }
   if (director.relief >= 0.62 && room.nextReliefSupplyAt <= 0 && room.resources.length < resourceLimit + 4) {
     room.resources.push(createResource(room, director, true));
@@ -1594,7 +1694,9 @@ function chooseZombieTarget(room: Room, zombie: Zombie) {
       upgrades: emptyUpgrades(),
       inventory: emptyInventory(),
       craftedWeapons: [],
+      weaponLevels: {},
       craftedSupportEquipment: [],
+      supportEquipmentLevels: {},
       resourcesCollected: 0,
       facilitiesBuilt: 0,
       survivalSec: 0
