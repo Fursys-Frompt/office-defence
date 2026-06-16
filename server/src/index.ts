@@ -62,6 +62,7 @@ type Room = {
   nextResourceSpawnAt: number;
   recentDamage: Map<string, { amount: number; lastAt: number }>;
   nextReliefSupplyAt: number;
+  killTargetReachedAt: Map<string, number>;
   walls: Wall[];
   wallHp: Map<string, number>;
 };
@@ -216,7 +217,7 @@ const MAP_PRESETS: Record<GameMode, MapPreset> = {
 const MODE_LABELS: Record<GameMode, string> = {
   timedSurvival: '제한시간 생존',
   endless: '무제한 생존',
-  killTarget: '팀 처치 목표'
+  killTarget: '좀비 처치 목표'
 };
 
 function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string): Room {
@@ -248,6 +249,7 @@ function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string
     nextResourceSpawnAt: 0,
     recentDamage: new Map(),
     nextReliefSupplyAt: 0,
+    killTargetReachedAt: new Map(),
     walls: wallsForMode(sanitizedSettings.gameMode),
     wallHp: new Map()
   };
@@ -383,9 +385,9 @@ function elapsedSeconds(room: Room) {
   return Math.max(0, (Date.now() - room.startedAt) / 1000);
 }
 
-function teamKills(room: Room) {
+function leadingPlayerKills(room: Room) {
   let kills = 0;
-  for (const player of room.players.values()) kills += player.kills;
+  for (const player of room.players.values()) kills = Math.max(kills, player.kills);
   return kills;
 }
 
@@ -402,13 +404,13 @@ function objectiveState(room: Room, elapsed: number): GameSnapshot['objective'] 
     };
   }
   if (room.settings.gameMode === 'killTarget') {
-    const kills = teamKills(room);
+    const kills = leadingPlayerKills(room);
     return {
       mode: room.settings.gameMode,
       label: MODE_LABELS.killTarget,
       current: kills,
       target: room.settings.killTarget,
-      completed: kills >= room.settings.killTarget,
+      completed: hasKillTargetWinner(room),
       failed
     };
   }
@@ -426,8 +428,12 @@ function shouldEndGame(room: Room) {
   const aliveCount = [...room.players.values()].filter((player) => player.alive).length;
   if (aliveCount === 0) return true;
   if (room.settings.gameMode === 'timedSurvival') return room.remainingSec <= 0;
-  if (room.settings.gameMode === 'killTarget') return teamKills(room) >= room.settings.killTarget;
+  if (room.settings.gameMode === 'killTarget') return hasKillTargetWinner(room);
   return false;
+}
+
+function hasKillTargetWinner(room: Room) {
+  return room.killTargetReachedAt.size > 0 || [...room.players.values()].some((player) => player.kills >= room.settings.killTarget);
 }
 
 function emptyUpgrades() {
@@ -485,6 +491,7 @@ function startGame(room: Room) {
   room.nextResourceSpawnAt = 0;
   room.recentDamage = new Map();
   room.nextReliefSupplyAt = 18;
+  room.killTargetReachedAt = new Map();
   clearZombieAiTimers(room);
   room.zombies = [];
   room.spawnWarnings = [];
@@ -531,7 +538,23 @@ function endGame(room: Room) {
   if (alive.length === 1) alive[0].score += 50;
   room.results = [...room.players.values()]
     .map((player) => ({ ...player, inventory: { ...player.inventory }, position: { ...player.position }, aim: { ...player.aim } }))
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => compareResults(room, a, b));
+}
+
+function compareResults(room: Room, a: Player, b: Player) {
+  if (room.settings.gameMode === 'killTarget') {
+    const aReachedAt = room.killTargetReachedAt.get(a.id);
+    const bReachedAt = room.killTargetReachedAt.get(b.id);
+    if (aReachedAt !== undefined || bReachedAt !== undefined) {
+      if (aReachedAt === undefined) return 1;
+      if (bReachedAt === undefined) return -1;
+      if (aReachedAt !== bReachedAt) return aReachedAt - bReachedAt;
+    }
+    if (a.kills !== b.kills) return b.kills - a.kills;
+  }
+  if (a.score !== b.score) return b.score - a.score;
+  if (a.kills !== b.kills) return b.kills - a.kills;
+  return b.survivalSec - a.survivalSec;
 }
 
 function tickRoom(room: Room) {
@@ -888,11 +911,20 @@ function damageZombie(room: Room, zombie: Zombie, damage: number, attackerId: st
   const attacker = room.players.get(attackerId);
   if (!attacker) return;
   attacker.kills += 1;
+  registerKillTargetProgress(room, attacker);
   checkLevelUp(room, attacker);
   const combo = registerKillCombo(room, attacker);
   const score = zombieScore(zombie.type);
   attacker.score += score;
   pushFeedback(room, 'kill', zombie.position, `+${score}`);
+}
+
+function registerKillTargetProgress(room: Room, player: Player) {
+  if (room.settings.gameMode !== 'killTarget') return;
+  if (player.kills < room.settings.killTarget) return;
+  if (room.killTargetReachedAt.has(player.id)) return;
+  room.killTargetReachedAt.set(player.id, elapsedSeconds(room));
+  pushFeedback(room, 'kill', player.position, '목표 달성', 0.18);
 }
 
 function damagePlayer(room: Room, target: Player, damage: number, attacker?: Player) {
@@ -1523,6 +1555,15 @@ function circleRect(point: Vec2, radius: number, rect: Wall) {
 
 app.get('/api/rooms', (_req, res) => {
   res.json(roomSummaries());
+});
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    ok: true,
+    rooms: rooms.size,
+    players: [...rooms.values()].reduce((total, room) => total + room.players.size, 0),
+    uptimeSec: Math.floor(process.uptime())
+  });
 });
 
 io.on('connection', (socket) => {

@@ -123,6 +123,43 @@ type PendingRoomAction = {
   roomId?: string;
 };
 
+function sanitizeRoomCode(value: string | null | undefined) {
+  return (value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+function roomInviteUrl(nextRoomId: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('room', nextRoomId);
+  return url.toString();
+}
+
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  textarea.remove();
+}
+
+function resultShareText(snapshot: GameSnapshot, ranking: GameSnapshot['players']) {
+  const top = ranking[0];
+  const lines = [
+    '오피스 좀비 서바이벌 결과',
+    `${snapshot.roomTitle} · ${snapshot.objective.label} ${objectiveSummary(snapshot.objective)}`,
+    top ? `1위 ${top.nickname} · ${top.score}점 · ${top.kills}처치 · ${top.survivalSec}초 생존` : '',
+    ...ranking.slice(1, 3).map((player, index) => `${index + 2}위 ${player.nickname} · ${player.score}점 · ${player.kills}처치`),
+    roomInviteUrl(snapshot.roomId)
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
 function LobbyApp() {
   const [nickname, setNickname] = useState('');
   const [roomTitle, setRoomTitle] = useState('');
@@ -135,7 +172,10 @@ function LobbyApp() {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [pendingAction, setPendingAction] = useState<PendingRoomAction | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [inviteStatus, setInviteStatus] = useState('');
+  const [shareStatus, setShareStatus] = useState('');
   const settingsRoomRef = useRef('');
+  const deepLinkHandledRef = useRef(false);
   const [settings, setSettings] = useState<RoomSettings>({
     maxPlayers: 6,
     gameMode: 'timedSurvival',
@@ -154,6 +194,9 @@ function LobbyApp() {
       setPlayerId(payload.playerId);
       setPendingAction(null);
       setError('');
+      const url = new URL(window.location.href);
+      url.searchParams.set('room', payload.roomId);
+      window.history.replaceState(null, '', url);
     });
     socket.on('connect', refreshRooms);
     socket.on('snapshot', setSnapshot);
@@ -167,6 +210,15 @@ function LobbyApp() {
       socket.off('snapshot');
       socket.off('errorMessage');
     };
+  }, []);
+
+  useEffect(() => {
+    if (deepLinkHandledRef.current) return;
+    const requestedRoom = sanitizeRoomCode(new URLSearchParams(window.location.search).get('room'));
+    if (!requestedRoom) return;
+    deepLinkHandledRef.current = true;
+    setRoomInput(requestedRoom);
+    setPendingAction({ mode: 'join', roomId: requestedRoom });
   }, []);
 
   useEffect(() => {
@@ -186,7 +238,7 @@ function LobbyApp() {
 
   const openJoinModal = (nextRoomId?: string) => {
     setError('');
-    setPendingAction({ mode: 'join', roomId: nextRoomId });
+    setPendingAction({ mode: 'join', roomId: sanitizeRoomCode(nextRoomId) });
   };
 
   const confirmRoomAction = () => {
@@ -206,7 +258,21 @@ function LobbyApp() {
     setRoomId('');
     setPlayerId('');
     setSnapshot(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('room');
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
     refreshRooms();
+  };
+
+  const copyInviteLink = async () => {
+    const activeRoomId = snapshot?.roomId || roomId;
+    if (!activeRoomId) return;
+    try {
+      await copyText(roomInviteUrl(activeRoomId));
+      setInviteStatus('초대 링크를 복사했습니다.');
+    } catch {
+      setInviteStatus('초대 링크 복사에 실패했습니다.');
+    }
   };
 
   if (!snapshot || !me) {
@@ -216,7 +282,7 @@ function LobbyApp() {
           <div className="lobby-title">
             <p className="eyebrow">Mission Lobby</p>
             <h1>오피스 좀비 서바이벌</h1>
-            <p className="subtitle">대기중인 방에 입장하거나 새 방을 만들어 팀 생존을 시작하세요.</p>
+            <p className="subtitle">대기중인 방에 입장하거나 새 방을 만들어 개인 생존 경쟁을 시작하세요.</p>
           </div>
 
           <div className="lobby-actions">
@@ -234,7 +300,7 @@ function LobbyApp() {
                 placeholder="예: ABC123"
               />
             </label>
-            <button type="button" onClick={() => roomInput.trim() && openJoinModal(roomInput.trim().toUpperCase())}>코드로 입장</button>
+            <button type="button" onClick={() => roomInput.trim() && openJoinModal(roomInput)}>코드로 입장</button>
           </div>
 
           <section className="room-list" aria-label="생성된 방 목록">
@@ -308,8 +374,12 @@ function LobbyApp() {
                 <span className={snapshot.settings.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{snapshot.settings.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
               </div>
             </div>
-            <button onClick={leaveRoom}>나가기</button>
+            <div className="room-header-actions">
+              <button type="button" onClick={copyInviteLink}>초대 링크</button>
+              <button onClick={leaveRoom}>나가기</button>
+            </div>
           </div>
+          {inviteStatus && <p className="action-status">{inviteStatus}</p>}
           <div className="player-list">
             {snapshot.players.map((player) => (
               <div key={player.id} className="player-row">
@@ -391,14 +461,53 @@ function LobbyApp() {
   }
 
   if (snapshot.phase === 'ended') {
-    const ranking = [...(snapshot.results.length > 0 ? snapshot.results : snapshot.players)].sort((a, b) => b.score - a.score);
+    const ranking = snapshot.results.length > 0
+      ? snapshot.results
+      : [...snapshot.players].sort((a, b) => b.score - a.score);
     const objective = snapshot.objective;
+    const shareResult = async () => {
+      const text = resultShareText(snapshot, ranking);
+      const nativeShare = (navigator as Navigator & { share?: (data: ShareData) => Promise<void> }).share;
+      let sharedNatively = false;
+      try {
+        if (nativeShare) {
+          await nativeShare({ title: '오피스 좀비 서바이벌 결과', text, url: roomInviteUrl(snapshot.roomId) });
+          sharedNatively = true;
+        } else {
+          await copyText(text);
+        }
+        setShareStatus(sharedNatively ? '공유를 열었습니다.' : '결과 카드를 복사했습니다.');
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        try {
+          await copyText(text);
+          setShareStatus('결과 카드를 복사했습니다.');
+        } catch {
+          setShareStatus('결과 공유에 실패했습니다.');
+        }
+      }
+    };
     return (
       <main className="shell result">
         <section className="panel">
           <p className="eyebrow">Game Result</p>
           <h1>{objective.failed ? '작전 실패' : objective.completed ? '목표 달성' : '생존 순위'}</h1>
           <p className="result-objective">{objectiveSummary(objective)}</p>
+          <section className="result-card" aria-label="공유 결과 카드">
+            <div>
+              <span>{snapshot.roomTitle}</span>
+              <strong>{objective.label}</strong>
+            </div>
+            <h2>{ranking[0] ? `${ranking[0].nickname} 1위` : '결과 없음'}</h2>
+            {ranking[0] && (
+              <div className="result-card-stats">
+                <span>{ranking[0].score}점</span>
+                <span>{ranking[0].kills}처치</span>
+                <span>{ranking[0].survivalSec}초 생존</span>
+              </div>
+            )}
+            <p>{objectiveSummary(objective)}</p>
+          </section>
           <div className="ranking">
             {ranking.map((player, index) => (
               <div key={player.id} className="rank-row">
@@ -411,9 +520,12 @@ function LobbyApp() {
             ))}
           </div>
           <div className="result-actions">
+            <button type="button" onClick={shareResult}>결과 공유</button>
+            <button type="button" onClick={copyInviteLink}>초대 링크</button>
             {me.host && <button className="primary" onClick={() => socket.emit('restartGame')}>같은 방 다시하기</button>}
             <button onClick={leaveRoom}>로비로 나가기</button>
           </div>
+          {(shareStatus || inviteStatus) && <p className="action-status">{shareStatus || inviteStatus}</p>}
         </section>
       </main>
     );
@@ -433,7 +545,7 @@ function GameGuideModal({ onClose }: { onClose: () => void }) {
         <div className="guide-grid">
           <article>
             <strong>목표</strong>
-            <p>방장이 선택한 모드에 따라 제한시간 생존, 무제한 생존, 팀 처치 목표가 적용됩니다. 모드마다 맵 구조가 달라집니다.</p>
+            <p>방장이 선택한 모드에 따라 제한시간 생존, 무제한 생존, 좀비 처치 목표가 적용됩니다. 모드마다 맵 구조가 달라집니다.</p>
           </article>
           <article>
             <strong>아이템</strong>

@@ -352,6 +352,13 @@ h1 {
   align-items: start;
 }
 
+.room-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .room-meta {
   display: flex;
   flex-wrap: wrap;
@@ -403,10 +410,66 @@ h1 {
   gap: 10px;
 }
 
+.action-status {
+  margin: -4px 0 0;
+  color: rgba(23, 33, 29, 0.66);
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .result-objective {
   margin: -8px 0 0;
   color: rgba(23, 33, 29, 0.66);
   font-weight: 800;
+}
+
+.result-card {
+  display: grid;
+  gap: 12px;
+  border-radius: 8px;
+  padding: 18px;
+  background:
+    linear-gradient(135deg, rgba(23, 59, 63, 0.94), rgba(62, 125, 99, 0.92)),
+    #173b3f;
+  color: #f7fbfa;
+  box-shadow: 0 18px 42px rgba(23, 59, 63, 0.22);
+}
+
+.result-card > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  color: rgba(247, 251, 250, 0.72);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.result-card h2,
+.result-card p {
+  margin: 0;
+}
+
+.result-card h2 {
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.result-card-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.result-card-stats span {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: rgba(247, 251, 250, 0.12);
+  font-weight: 900;
 }
 
 .rank-place {
@@ -1069,6 +1132,24 @@ canvas {
   .settings,
   .rank-row {
     grid-template-columns: 1fr;
+  }
+
+  .room-header {
+    grid-template-columns: 1fr;
+  }
+
+  .room-header-actions,
+  .result-actions {
+    justify-content: stretch;
+  }
+
+  .room-header-actions button,
+  .result-actions button {
+    flex: 1 1 140px;
+  }
+
+  .result-card h2 {
+    font-size: 24px;
   }
 
   .hud {
