@@ -183,7 +183,7 @@ h1 {
 
 .room-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
   gap: 12px;
   align-items: center;
   min-height: 62px;
@@ -466,6 +466,14 @@ h1 {
   width: min(980px, calc(100vw - 32px));
 }
 
+.result-panel.success {
+  box-shadow: 0 22px 58px rgba(62, 125, 99, 0.18), inset 0 0 0 1px rgba(62, 125, 99, 0.18);
+}
+
+.result-panel.failed {
+  box-shadow: 0 22px 58px rgba(120, 36, 36, 0.18), inset 0 0 0 1px rgba(198, 63, 63, 0.2);
+}
+
 .result-header {
   display: flex;
   align-items: start;
@@ -496,9 +504,19 @@ h1 {
   font-weight: 900;
 }
 
+.result-badge.success {
+  background: rgba(62, 125, 99, 0.16);
+  color: #23664d;
+}
+
 .result-badge.failed {
-  background: rgba(198, 63, 63, 0.12);
+  background: rgba(198, 63, 63, 0.14);
   color: #9e3232;
+}
+
+.result-badge.ended {
+  background: rgba(23, 59, 63, 0.1);
+  color: #173b3f;
 }
 
 .result-summary-grid {
@@ -518,6 +536,24 @@ h1 {
     #173b3f;
   color: #f7fbfa;
   box-shadow: 0 18px 42px rgba(23, 59, 63, 0.22);
+}
+
+.result-card.success {
+  background:
+    linear-gradient(135deg, rgba(23, 59, 63, 0.96), rgba(62, 125, 99, 0.94)),
+    #173b3f;
+}
+
+.result-card.failed {
+  background:
+    linear-gradient(135deg, rgba(58, 38, 38, 0.96), rgba(158, 50, 50, 0.9)),
+    #3a2626;
+}
+
+.result-card.ended {
+  background:
+    linear-gradient(135deg, rgba(23, 59, 63, 0.94), rgba(73, 89, 87, 0.92)),
+    #173b3f;
 }
 
 .result-card > div:first-child {
@@ -886,12 +922,72 @@ h1 {
   font-size: 12px;
 }
 
+.tutorial-flow-screen {
+  position: relative;
+  place-items: start center;
+  padding-bottom: 260px;
+}
+
+.tutorial-flow-panel {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.tutorial-room-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tutorial-setting-preview,
+.room-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tutorial-setting-preview span,
+.room-meta span {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: rgba(23, 59, 63, 0.07);
+  color: rgba(23, 33, 29, 0.72);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ready-preview {
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(126, 220, 155, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(62, 125, 99, 0.22);
+}
+
+.tutorial-countdown-preview {
+  position: relative;
+  width: min(980px, calc(100vw - 32px));
+  min-height: clamp(320px, calc(100dvh - 300px), 560px);
+  overflow: hidden;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(232, 240, 238, 0.88), rgba(207, 224, 220, 0.86)),
+    repeating-linear-gradient(90deg, rgba(23, 59, 63, 0.08) 0 1px, transparent 1px 72px),
+    repeating-linear-gradient(0deg, rgba(23, 59, 63, 0.08) 0 1px, transparent 1px 72px),
+    #dce8e5;
+  box-shadow: inset 0 0 0 1px rgba(23, 59, 63, 0.12), 0 18px 48px rgba(23, 59, 63, 0.18);
+}
+
 .tutorial-step-card {
   position: absolute;
   left: 50%;
   bottom: 28px;
   z-index: 8;
   width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 56px);
+  overflow-y: auto;
   display: grid;
   gap: 10px;
   transform: translateX(-50%);
@@ -954,11 +1050,58 @@ h1 {
   height: 270px;
 }
 
-.tutorial-focus-craft {
+.tutorial-focus-craft-station {
   right: 14%;
   bottom: 16%;
   width: 210px;
   height: 150px;
+}
+
+.tutorial-focus-craft-panel {
+  left: 12px;
+  right: auto;
+  bottom: 118px;
+  width: min(500px, calc(100vw - 24px));
+  height: 184px;
+}
+
+.tutorial-direction-arrow {
+  position: absolute;
+  z-index: 41;
+  pointer-events: none;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  color: #173b3f;
+  font-size: 13px;
+  font-weight: 900;
+  text-shadow: 0 1px 0 rgba(247, 251, 250, 0.9);
+}
+
+.tutorial-direction-arrow::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 18px solid transparent;
+  border-right: 18px solid transparent;
+  border-top: 30px solid #f0c86a;
+  filter: drop-shadow(0 8px 12px rgba(23, 59, 63, 0.28));
+  animation: tutorialArrowBounce 850ms ease-in-out infinite;
+}
+
+.tutorial-direction-arrow-craft {
+  left: 54%;
+  top: 36%;
+}
+
+@keyframes tutorialArrowBounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(8px);
+  }
 }
 
 .tutorial-step-card strong {
@@ -972,10 +1115,15 @@ h1 {
   line-height: 1.45;
 }
 
+.tutorial-step-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
 .tutorial-progress {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
 }
 
 .tutorial-progress span {
@@ -983,7 +1131,7 @@ h1 {
   display: inline-flex;
   align-items: center;
   border-radius: 8px;
-  padding: 0 9px;
+  padding: 0 8px;
   background: rgba(23, 59, 63, 0.08);
   color: rgba(23, 33, 29, 0.52);
   font-size: 12px;

@@ -5,6 +5,7 @@ import type {
   ClientToServerEvents,
   FacilityType,
   FeedbackEvent,
+  GameDifficulty,
   GameMode,
   GameSnapshot,
   PlayerInput,
@@ -46,9 +47,10 @@ type VisualEffect = Omit<FeedbackEvent, 'type'> & {
 type AudioCue = FeedbackEvent['type'] | 'shoot' | 'melee';
 type TouchControlSide = 'left' | 'right';
 type InstallItem = Extract<ResourceType, 'partitionMaterial'>;
-type TutorialStep = 'move' | 'attack' | 'levelup' | 'collect' | 'craft' | 'complete';
+type TutorialStep = 'room' | 'ready' | 'countdown' | 'move' | 'attack' | 'levelup' | 'collect' | 'craft' | 'items' | 'complete';
 type TutorialController = {
   step: TutorialStep;
+  onNext: () => void;
   onMove: (move: Vec2) => void;
   onUpgrade: () => void;
   onCraft: (weapon: WeaponType) => void;
@@ -72,6 +74,25 @@ const GAME_MODE_MAP_LABELS: Record<GameMode, string> = {
   timedSurvival: '분할 사무실',
   endless: '순환 복도',
   killTarget: '중앙 교전 구역'
+};
+type TutorialCraftFocus = 'station' | 'panel';
+const GAME_DIFFICULTY_LABELS: Record<GameDifficulty, string> = {
+  easy: '이지',
+  normal: '노말',
+  hard: '하드'
+};
+const TUTORIAL_STEPS: TutorialStep[] = ['room', 'ready', 'countdown', 'move', 'attack', 'levelup', 'collect', 'craft', 'items', 'complete'];
+const TUTORIAL_STEP_LABELS: Record<TutorialStep, string> = {
+  room: '방',
+  ready: '준비',
+  countdown: '시작',
+  move: '이동',
+  attack: '공격',
+  levelup: '성장',
+  collect: '수집',
+  craft: '제작',
+  items: '아이템',
+  complete: '결과'
 };
 const SPRITES = {
   player: { row: 0, size: 74, shadow: 30, frameMs: 130 },
@@ -356,6 +377,7 @@ function LobbyApp() {
   const [settings, setSettings] = useState<RoomSettings>({
     maxPlayers: 6,
     gameMode: 'timedSurvival',
+    difficulty: 'normal',
     gameDurationSec: 180,
     killTarget: 100,
     pvpEnabled: false
@@ -524,6 +546,7 @@ function LobbyApp() {
                       <em>코드 {room.roomId} · 방장 {room.hostNickname}</em>
                     </span>
                     <span>{room.playerCount}/{room.maxPlayers}</span>
+                    <span>{GAME_DIFFICULTY_LABELS[room.difficulty]}</span>
                     <span>{GAME_MODE_LABELS[room.gameMode]}</span>
                     <span>{room.gameMode === 'endless' ? '무제한' : room.gameMode === 'killTarget' ? `${room.killTarget}킬` : `${Math.round(room.gameDurationSec / 60)}분`}</span>
                     <span className={room.pvpEnabled ? 'pvp-on' : 'pvp-off'}>{room.pvpEnabled ? 'PVP ON' : 'PVP OFF'}</span>
@@ -550,9 +573,11 @@ function LobbyApp() {
             action={pendingAction}
             nickname={nickname}
             roomTitle={roomTitle}
+            settings={settings}
             avatarId={avatarId}
             onNicknameChange={setNickname}
             onRoomTitleChange={setRoomTitle}
+            onSettingsChange={setSettings}
             onAvatarChange={setAvatarId}
             onCancel={() => setPendingAction(null)}
             onConfirm={confirmRoomAction}
@@ -574,6 +599,7 @@ function LobbyApp() {
                 <span>코드 {roomId}</span>
                 <span>참가 {snapshot.players.length}/{snapshot.settings.maxPlayers}</span>
                 <span>준비 {readyCount}/{snapshot.players.length}</span>
+                <span>{GAME_DIFFICULTY_LABELS[snapshot.settings.difficulty]}</span>
                 <span>{GAME_MODE_LABELS[snapshot.settings.gameMode]}</span>
                 <span>맵 {snapshot.map.name}</span>
                 <span>{snapshot.settings.gameMode === 'endless' ? '무제한' : snapshot.settings.gameMode === 'killTarget' ? `${snapshot.settings.killTarget}킬` : `${Math.round(snapshot.settings.gameDurationSec / 60)}분`}</span>
@@ -607,6 +633,17 @@ function LobbyApp() {
                     value={settings.maxPlayers}
                     onChange={(event) => updateRoomSettings({ ...settings, maxPlayers: Number(event.target.value) })}
                   />
+                </label>
+                <label>
+                  난이도
+                  <select
+                    value={settings.difficulty}
+                    onChange={(event) => updateRoomSettings({ ...settings, difficulty: event.target.value as GameDifficulty })}
+                  >
+                    <option value="easy">이지</option>
+                    <option value="normal">노말</option>
+                    <option value="hard">하드</option>
+                  </select>
                 </label>
                 <label>
                   기본 목표
@@ -690,6 +727,7 @@ function LobbyApp() {
       : [...snapshot.players].sort((a, b) => b.score - a.score);
     const objective = snapshot.objective;
     const topPlayer = ranking[0];
+    const outcome = resultOutcome(snapshot, topPlayer);
     const shareText = resultShareText(snapshot, ranking);
     const shareLines = shareText.split('\n');
     const shareUrl = lobbyUrl();
@@ -734,27 +772,27 @@ function LobbyApp() {
       }
     };
     return (
-      <main className="shell result">
-        <section className="panel result-panel">
+      <main className={`shell result result-${outcome.tone}`}>
+        <section className={`panel result-panel ${outcome.tone}`}>
           <div className="result-header">
             <div>
-              <p className="eyebrow">Game Result</p>
-              <h1>{objective.failed ? '작전 실패' : objective.completed ? '목표 달성' : '생존 순위'}</h1>
-              <p className="result-objective">{snapshot.roomTitle} · {objective.label} {objectiveSummary(objective)}</p>
+              <p className="eyebrow">{outcome.eyebrow}</p>
+              <h1>{outcome.title}</h1>
+              <p className="result-objective">{outcome.detail}</p>
             </div>
-            <span className={objective.failed ? 'result-badge failed' : 'result-badge'}>
-              {objective.failed ? '실패' : objective.completed ? '완료' : '종료'}
+            <span className={`result-badge ${outcome.tone}`}>
+              {outcome.badge}
             </span>
           </div>
 
           <section className="result-summary-grid">
-            <article className="result-card" aria-label="우승자 요약">
+            <article className={`result-card ${outcome.tone}`} aria-label="결과 요약">
               <div>
-                <span>Top Survivor</span>
-                <strong>{objective.label}</strong>
+                <span>{outcome.cardLabel}</span>
+                <strong>{objective.label} {objectiveSummary(objective)}</strong>
               </div>
-              <h2>{topPlayer ? `${topPlayer.nickname}` : '결과 없음'}</h2>
-              <p>{topPlayer ? '이번 생존 경쟁 1위' : '기록된 결과가 없습니다.'}</p>
+              <h2>{outcome.cardTitle}</h2>
+              <p>{outcome.cardDescription}</p>
               {topPlayer && (
                 <div className="result-card-stats">
                   <span>{topPlayer.score}점</span>
@@ -834,7 +872,7 @@ function LobbyApp() {
 }
 
 function TutorialGame({ onExit }: { onExit: () => void }) {
-  const [step, setStep] = useState<TutorialStep>('move');
+  const [step, setStep] = useState<TutorialStep>('room');
   const [playerPosition, setPlayerPosition] = useState<Vec2>({ x: 420, y: 520 });
   const [collected, setCollected] = useState(false);
   const [attackConfirmed, setAttackConfirmed] = useState(false);
@@ -871,12 +909,22 @@ function TutorialGame({ onExit }: { onExit: () => void }) {
     }));
   }, [step]);
 
+  const handleNext = useCallback(() => {
+    setStep((current) => {
+      if (current === 'room') return 'ready';
+      if (current === 'ready') return 'countdown';
+      if (current === 'countdown') return 'move';
+      if (current === 'items') return 'complete';
+      return current;
+    });
+  }, []);
+
   const handleUpgrade = useCallback(() => {
     if (step === 'levelup') setStep('collect');
   }, [step]);
 
   const handleCraft = useCallback((weapon: WeaponType) => {
-    if (step === 'craft' && weapon === 'keyboardShotgun') setStep('complete');
+    if (step === 'craft' && weapon === 'keyboardShotgun') setStep('items');
   }, [step]);
 
   const tutorialSnapshot = useMemo(
@@ -884,12 +932,99 @@ function TutorialGame({ onExit }: { onExit: () => void }) {
     [attackConfirmed, collected, playerPosition, step]
   );
 
+  if (step === 'room' || step === 'ready' || step === 'countdown') {
+    return (
+      <TutorialFlowScreen
+        step={step}
+        onNext={handleNext}
+        onExit={onExit}
+      />
+    );
+  }
+
   return (
     <GameView
       snapshot={tutorialSnapshot}
       playerId="tutorial-player"
-      tutorial={{ step, onMove: handleMove, onUpgrade: handleUpgrade, onCraft: handleCraft, onExit }}
+      tutorial={{ step, onNext: handleNext, onMove: handleMove, onUpgrade: handleUpgrade, onCraft: handleCraft, onExit }}
     />
+  );
+}
+
+function TutorialFlowScreen({ step, onNext, onExit }: { step: TutorialStep; onNext: () => void; onExit: () => void }) {
+  return (
+    <main className="shell tutorial-flow-screen">
+      {step === 'room' && (
+        <section className="panel tutorial-flow-panel">
+          <div>
+            <p className="eyebrow">Lobby</p>
+            <h1>오피스 좀비 서바이벌</h1>
+            <p className="subtitle">새 방을 만들거나 방 코드로 참가한 뒤, 방장이 목표와 난이도를 정합니다.</p>
+          </div>
+          <div className="tutorial-room-actions">
+            <button type="button" className="primary highlighted">방 생성</button>
+            <button type="button">코드로 입장</button>
+            <button type="button">새로고침</button>
+          </div>
+          <section className="tutorial-setting-preview" aria-label="방 설정 미리보기">
+            <span><strong>난이도</strong> 노말</span>
+            <span><strong>목표</strong> 제한시간 생존</span>
+            <span><strong>시간</strong> 3분</span>
+            <span><strong>PVP</strong> 꺼짐</span>
+          </section>
+        </section>
+      )}
+      {step === 'ready' && (
+        <section className="panel tutorial-flow-panel">
+          <div className="room-header">
+            <div>
+              <p className="eyebrow">Mission Room</p>
+              <h1>생존 방</h1>
+            </div>
+            <button type="button">초대 링크 복사</button>
+          </div>
+          <div className="room-meta">
+            <span>코드 TUTOR</span>
+            <span>참가 1/6</span>
+            <span>준비 0/1</span>
+            <span>노말</span>
+            <span>제한시간 생존</span>
+          </div>
+          <div className="players">
+            <div className="player-row ready-preview">
+              <strong>튜토리얼</strong>
+              <span>방장</span>
+              <span>대기 중</span>
+            </div>
+          </div>
+          <button type="button" className="primary highlighted">준비 완료</button>
+        </section>
+      )}
+      {step === 'countdown' && (
+        <section className="tutorial-countdown-preview" aria-label="게임 시작 카운트다운 미리보기">
+          <div className="hud player-hud top-left">
+            <div className="player-summary">
+              <strong>튜토리얼</strong>
+              <span>0점</span>
+            </div>
+            <div className="hp-meter" aria-label="체력 100/100">
+              <span style={{ width: '100%' }} />
+            </div>
+            <b>체력 100/100</b>
+          </div>
+          <section className="hud mission-hud top-right">
+            <span className="objective-chip"><strong>제한시간 생존</strong> 3:00 생존 경쟁</span>
+            <span>웨이브 <b>1</b> · 전투 준비</span>
+          </section>
+          <div className="countdown">3</div>
+        </section>
+      )}
+      <TutorialOverlay
+        step={step}
+        onNext={onNext}
+        onExit={onExit}
+      />
+    </main>
   );
 }
 
@@ -900,20 +1035,21 @@ function makeTutorialSnapshot(
   attackConfirmed: boolean
 ): GameSnapshot {
   const inventory = emptyClientInventory();
-  if (collected || step === 'craft' || step === 'complete') {
+  if (collected || step === 'craft' || step === 'items' || step === 'complete') {
     inventory.keycapSet = 3;
     inventory.officeMotor = 1;
     inventory.mixCoffee = 1;
     inventory.partitionMaterial = 1;
   }
-  const craftedWeapons: WeaponType[] = step === 'complete' ? ['keyboardShotgun'] : [];
+  const craftedWeapons: WeaponType[] = step === 'items' || step === 'complete' ? ['keyboardShotgun'] : [];
   return {
     roomId: 'TUTORIAL',
     roomTitle: '튜토리얼',
-    phase: step === 'complete' ? 'ended' : 'playing',
+    phase: step === 'complete' ? 'ended' : step === 'countdown' ? 'countdown' : 'playing',
     settings: {
       maxPlayers: 1,
       gameMode: 'timedSurvival',
+      difficulty: 'normal',
       gameDurationSec: 180,
       killTarget: 100,
       pvpEnabled: false
@@ -932,7 +1068,7 @@ function makeTutorialSnapshot(
       score: step === 'complete' ? 120 : collected ? 36 : attackConfirmed ? 20 : 0,
       kills: attackConfirmed ? 1 : 0,
       combo: attackConfirmed ? 1 : 0,
-      level: step === 'levelup' || step === 'collect' || step === 'craft' || step === 'complete' ? 2 : 1,
+      level: step === 'levelup' || step === 'collect' || step === 'craft' || step === 'items' || step === 'complete' ? 2 : 1,
       nextLevelKills: 3,
       pendingUpgradeChoices: step === 'levelup' ? tutorialUpgradeChoices() : [],
       pendingUpgradeCount: step === 'levelup' ? 1 : 0,
@@ -946,8 +1082,8 @@ function makeTutorialSnapshot(
       },
       inventory,
       craftedWeapons,
-      weaponLevels: step === 'complete' ? { keyboardShotgun: 1 } : {},
-      equippedWeapon: step === 'complete' ? 'keyboardShotgun' : undefined,
+      weaponLevels: step === 'items' || step === 'complete' ? { keyboardShotgun: 1 } : {},
+      equippedWeapon: step === 'items' || step === 'complete' ? 'keyboardShotgun' : undefined,
       craftedSupportEquipment: [],
       supportEquipmentLevels: {},
       equippedSupportEquipment: undefined,
@@ -964,7 +1100,7 @@ function makeTutorialSnapshot(
       position: { x: 710, y: 520 }
     }] : [],
     spawnWarnings: [],
-    resources: collected || step === 'craft' || step === 'complete'
+    resources: collected || step === 'craft' || step === 'items' || step === 'complete'
       ? []
       : [
           { id: 'tutorial-keycap', type: 'keycapSet', position: { x: 610, y: 520 } },
@@ -1012,9 +1148,9 @@ function makeTutorialSnapshot(
       text: '재료'
     }] : [],
     wave: 1,
-    wavePhase: step === 'craft' || step === 'complete' ? 'break' : 'combat',
-    waveTimeRemaining: step === 'craft' || step === 'complete' ? 15 : 34,
-    countdown: 0,
+    wavePhase: step === 'craft' || step === 'items' || step === 'complete' ? 'break' : 'combat',
+    waveTimeRemaining: step === 'craft' || step === 'items' || step === 'complete' ? 15 : 34,
+    countdown: step === 'countdown' ? 3 : 0,
     remainingSec: 180,
     elapsedSec: step === 'complete' ? 18 : collected ? 12 : 6,
     objective: {
@@ -1089,10 +1225,10 @@ function GameGuideModal({ onClose, onStartTutorial }: { onClose: () => void; onS
           <article className="guide-tutorial">
             <strong>실제 화면 튜토리얼</strong>
             <ol>
-              <li>실제 게임 화면에서 WASD로 이동합니다.</li>
-              <li>캔버스 안의 좀비 자동공격을 확인합니다.</li>
-              <li>바닥 재료 쪽으로 이동해 수집합니다.</li>
-              <li>실제 제작 HUD에서 장비를 하나 만듭니다.</li>
+              <li>방 생성, 난이도, Ready, 카운트다운 흐름을 확인합니다.</li>
+              <li>실제 게임 화면에서 WASD로 이동하고 자동공격을 확인합니다.</li>
+              <li>레벨업, 재료 수집, 제작대 장비 제작을 차례로 체험합니다.</li>
+              <li>사용 아이템과 결과 화면에서 할 일을 확인합니다.</li>
             </ol>
           </article>
           <article>
@@ -1101,7 +1237,7 @@ function GameGuideModal({ onClose, onStartTutorial }: { onClose: () => void; onS
           </article>
           <article>
             <strong>아이템</strong>
-            <p>제작대 근처에서 재료를 조합해 무기와 보조장비를 만들 수 있습니다. 믹스커피와 파티션은 직접 사용해야 합니다.</p>
+            <p>제작대 근처에서 무기와 보조장비를 만들 수 있습니다. 믹스커피는 Q, 파티션은 E로 쓰고 일부 보조장비는 장착 중 자동 발동합니다.</p>
           </article>
           <article>
             <strong>조작</strong>
@@ -1115,6 +1251,50 @@ function GameGuideModal({ onClose, onStartTutorial }: { onClose: () => void; onS
       </section>
     </div>
   );
+}
+
+function resultOutcome(snapshot: GameSnapshot, topPlayer?: GameSnapshot['players'][number]) {
+  const objective = snapshot.objective;
+  const progress = `${objective.label} ${objectiveSummary(objective)}`;
+  if (objective.failed) {
+    return {
+      tone: 'failed' as const,
+      eyebrow: 'Mission Failed',
+      title: '작전 실패',
+      badge: '전원 다운',
+      detail: `${snapshot.roomTitle} · ${progress}에서 전원이 쓰러졌습니다.`,
+      cardLabel: 'Failure Report',
+      cardTitle: '생존자가 남지 않았습니다',
+      cardDescription: topPlayer
+        ? `${topPlayer.nickname}님이 가장 오래 버텼지만 목표 완료 전 방어선이 무너졌습니다.`
+        : '기록된 생존자가 없습니다.'
+    };
+  }
+  if (objective.completed) {
+    const winner = topPlayer ? `${topPlayer.nickname} 1위` : '목표 달성';
+    return {
+      tone: 'success' as const,
+      eyebrow: 'Mission Complete',
+      title: '목표 달성',
+      badge: '성공',
+      detail: `${snapshot.roomTitle} · ${progress}을 완료했습니다.`,
+      cardLabel: 'MVP Survivor',
+      cardTitle: winner,
+      cardDescription: topPlayer
+        ? '목표를 끝까지 밀어붙인 이번 방의 최종 1위입니다.'
+        : '조건은 달성했지만 표시할 개인 기록이 없습니다.'
+    };
+  }
+  return {
+    tone: 'ended' as const,
+    eyebrow: 'Run Complete',
+    title: '생존 기록',
+    badge: '종료',
+    detail: `${snapshot.roomTitle} · ${progress}까지 진행했습니다.`,
+    cardLabel: 'Top Survivor',
+    cardTitle: topPlayer ? `${topPlayer.nickname} 1위` : '결과 없음',
+    cardDescription: topPlayer ? '이번 생존 경쟁 최고 기록입니다.' : '기록된 결과가 없습니다.'
+  };
 }
 
 function objectiveSummary(objective: GameSnapshot['objective']) {
@@ -1147,9 +1327,11 @@ function ProfileModal({
   action,
   nickname,
   roomTitle,
+  settings,
   avatarId,
   onNicknameChange,
   onRoomTitleChange,
+  onSettingsChange,
   onAvatarChange,
   onCancel,
   onConfirm
@@ -1157,9 +1339,11 @@ function ProfileModal({
   action: PendingRoomAction;
   nickname: string;
   roomTitle: string;
+  settings: RoomSettings;
   avatarId: number;
   onNicknameChange: (value: string) => void;
   onRoomTitleChange: (value: string) => void;
+  onSettingsChange: (settings: RoomSettings) => void;
   onAvatarChange: (value: number) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -1175,10 +1359,23 @@ function ProfileModal({
           <button type="button" onClick={onCancel}>닫기</button>
         </div>
         {action.mode === 'create' && (
-          <label>
-            방 제목
-            <input value={roomTitle} maxLength={24} onChange={(event) => onRoomTitleChange(event.target.value)} placeholder="생존 방" />
-          </label>
+          <>
+            <label>
+              방 제목
+              <input value={roomTitle} maxLength={24} onChange={(event) => onRoomTitleChange(event.target.value)} placeholder="생존 방" />
+            </label>
+            <label>
+              난이도
+              <select
+                value={settings.difficulty}
+                onChange={(event) => onSettingsChange({ ...settings, difficulty: event.target.value as GameDifficulty })}
+              >
+                <option value="easy">이지</option>
+                <option value="normal">노말</option>
+                <option value="hard">하드</option>
+              </select>
+            </label>
+          </>
         )}
         <label>
           닉네임
@@ -1889,6 +2086,8 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       {tutorial && (
         <TutorialOverlay
           step={tutorial.step}
+          craftFocus={nearestCraftingStation ? 'panel' : 'station'}
+          onNext={tutorial.onNext}
           onExit={tutorial.onExit}
         />
       )}
@@ -1896,51 +2095,109 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   );
 }
 
-function TutorialOverlay({ step, onExit }: { step: TutorialStep; onExit: () => void }) {
-  const stepIndex = step === 'complete' ? 5 : ['move', 'attack', 'levelup', 'collect', 'craft'].indexOf(step);
+function TutorialOverlay({
+  step,
+  craftFocus = 'station',
+  onNext,
+  onExit
+}: {
+  step: TutorialStep;
+  craftFocus?: TutorialCraftFocus;
+  onNext: () => void;
+  onExit: () => void;
+}) {
+  const stepIndex = TUTORIAL_STEPS.indexOf(step);
+  const shouldShowFocus = step === 'move' || step === 'attack' || step === 'levelup' || step === 'collect' || step === 'craft';
+  const focusClass = step === 'craft' ? `tutorial-focus-craft-${craftFocus}` : `tutorial-focus-${step}`;
   return (
     <>
-      {step !== 'complete' && <div className={`tutorial-focus tutorial-focus-${step}`} aria-hidden="true" />}
+      {shouldShowFocus && <div className={`tutorial-focus ${focusClass}`} aria-hidden="true" />}
+      {step === 'craft' && craftFocus === 'station' && (
+        <div className="tutorial-direction-arrow tutorial-direction-arrow-craft" aria-hidden="true">
+          <span>제작대</span>
+        </div>
+      )}
       <section className="tutorial-step-card actual-tutorial-card" aria-live="polite">
         <div className="tutorial-progress">
-          {['이동', '공격', '레벨업', '수집', '제작'].map((label, index) => (
-            <span key={label} className={index <= stepIndex ? 'active' : ''}>{label}</span>
+          {TUTORIAL_STEPS.map((tutorialStep, index) => (
+            <span key={tutorialStep} className={index <= stepIndex ? 'active' : ''}>{TUTORIAL_STEP_LABELS[tutorialStep]}</span>
           ))}
         </div>
+        {step === 'room' && (
+          <>
+            <strong>1. 방 만들기와 난이도 선택</strong>
+            <p>처음에는 로비에서 새 방을 만들거나 방 코드로 참가합니다. 방장은 인원, 난이도, 목표, 제한시간, PVP를 정합니다.</p>
+            <div className="tutorial-step-actions">
+              <button type="button" className="primary" onClick={onNext}>Ready 흐름 보기</button>
+            </div>
+          </>
+        )}
+        {step === 'ready' && (
+          <>
+            <strong>2. 모두 Ready하면 시작</strong>
+            <p>로비에서 참가자들이 준비 완료를 누르면 3초 카운트다운 후 게임이 시작됩니다. 방장은 중간에 일시정지도 할 수 있습니다.</p>
+            <div className="tutorial-step-actions">
+              <button type="button" className="primary" onClick={onNext}>카운트다운 보기</button>
+            </div>
+          </>
+        )}
+        {step === 'countdown' && (
+          <>
+            <strong>3. 카운트다운 후 전투 진입</strong>
+            <p>숫자가 끝나면 웨이브가 시작됩니다. 초반에는 위치를 잡고 가까운 자원과 제작대를 확인하세요.</p>
+            <div className="tutorial-step-actions">
+              <button type="button" className="primary" onClick={onNext}>조작 시작</button>
+            </div>
+          </>
+        )}
         {step === 'move' && (
           <>
-            <strong>1. 실제 조작으로 이동</strong>
-            <p>WASD 또는 방향키를 누르면 실제 게임 화면의 캐릭터가 움직입니다.</p>
+            <strong>4. 실제 조작으로 이동</strong>
+            <p>WASD를 누르면 실제 게임 화면의 캐릭터가 움직입니다. 모바일에서는 화면 조이스틱으로 이동합니다.</p>
           </>
         )}
         {step === 'attack' && (
           <>
-            <strong>2. 자동공격 확인</strong>
+            <strong>5. 자동공격 확인</strong>
             <p>가까운 좀비가 자동으로 타깃이 됩니다. 잠시 기다리면 처치가 확인됩니다.</p>
           </>
         )}
         {step === 'levelup' && (
           <>
-            <strong>3. 레벨업 선택</strong>
+            <strong>6. 레벨업 선택</strong>
             <p>실제 게임처럼 레벨업 선택지가 열렸습니다. 원하는 업그레이드 하나를 고르세요.</p>
           </>
         )}
         {step === 'collect' && (
           <>
-            <strong>4. 재료 줍기</strong>
+            <strong>7. 재료 줍기</strong>
             <p>캔버스 안의 재료 쪽으로 이동하세요. 실제 게임처럼 가까이 가면 수집됩니다.</p>
           </>
         )}
         {step === 'craft' && (
           <>
-            <strong>5. 제작대로 이동 후 장비 제작</strong>
-            <p>오른쪽 아래 제작대로 직접 이동하세요. 가까이 가면 실제 제작 HUD가 열리고 키보드 샷건을 만들 수 있습니다.</p>
+            <strong>8. 제작대로 이동 후 장비 제작</strong>
+            {craftFocus === 'station' ? (
+              <p>노란 원으로 표시된 가까운 제작대까지 직접 이동하세요. 제작대 근처에 들어가면 아래 제작 HUD가 열립니다.</p>
+            ) : (
+              <p>이제 아래 제작 HUD에서 키보드 샷건 버튼을 선택하세요. 하이라이트된 제작 리스트가 실제 제작 영역입니다.</p>
+            )}
+          </>
+        )}
+        {step === 'items' && (
+          <>
+            <strong>9. 아이템과 웨이브 사이클</strong>
+            <p>전투 중 Q는 믹스커피 회복, E는 파티션 전개입니다. 웨이브 사이의 제작 시간에는 재료를 쓰고 장비를 강화하세요.</p>
+            <p>보조장비는 종류마다 다릅니다. MZ의 키캡은 R로 쓰고, 로봇청소기와 연차 신청서 방패, 비상 AED는 장착 중 자동으로 작동합니다.</p>
+            <div className="tutorial-step-actions">
+              <button type="button" className="primary" onClick={onNext}>결과 화면 보기</button>
+            </div>
           </>
         )}
         {step === 'complete' && (
           <>
-            <strong>튜토리얼 완료</strong>
-            <p>실제 게임과 같은 HUD 흐름으로 이동, 자동공격, 수집, 제작을 확인했습니다.</p>
+            <strong>10. 종료 후 결과 확인</strong>
+            <p>제한시간 생존, 전원 사망, 처치 목표 달성 같은 종료 조건이 되면 결과 화면으로 이동합니다. 점수, 처치 수, 생존 시간, 공유 링크를 확인하고 같은 방을 다시 시작하거나 로비로 나갈 수 있습니다.</p>
             <button type="button" className="primary" onClick={onExit}>로비로 돌아가기</button>
           </>
         )}

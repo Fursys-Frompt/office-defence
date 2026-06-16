@@ -1,5 +1,6 @@
 export type GamePhase = 'lobby' | 'countdown' | 'playing' | 'paused' | 'ended';
 export type GameMode = 'timedSurvival' | 'endless' | 'killTarget';
+export type GameDifficulty = 'easy' | 'normal' | 'hard';
 export type MapTheme = 'officeGrid' | 'serviceLoop' | 'killArena';
 export type ZombieType = 'normal' | 'runner' | 'tanker';
 export type CraftMaterialType = 'keycapSet' | 'paperBundle' | 'officeMotor' | 'batteryPack' | 'rubberPart' | 'approvalKit';
@@ -28,6 +29,7 @@ export type Vec2 = {
 export type RoomSettings = {
   maxPlayers: number;
   gameMode: GameMode;
+  difficulty: GameDifficulty;
   gameDurationSec: number;
   killTarget: number;
   pvpEnabled: boolean;
@@ -222,6 +224,7 @@ export type RoomSummary = {
   maxPlayers: number;
   readyCount: number;
   gameMode: GameMode;
+  difficulty: GameDifficulty;
   gameDurationSec: number;
   killTarget: number;
   pvpEnabled: boolean;

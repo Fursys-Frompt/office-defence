@@ -9,6 +9,7 @@ import type {
   Facility,
   FacilityType,
   FeedbackEvent,
+  GameDifficulty,
   GameMode,
   GamePhase,
   GameSnapshot,
@@ -95,6 +96,14 @@ type DirectorState = {
   recentDamage: number;
 };
 
+type DifficultyTuning = {
+  spawnCount: number;
+  zombieCap: number;
+  spawnDelay: number;
+  zombieHp: number;
+  zombieDamage: number;
+};
+
 const app = express();
 const server = createServer(app);
 const io = new Server<ClientToServerEvents, ServerToClientEvents>(server, {
@@ -122,6 +131,29 @@ const ZOMBIE_SPAWN_WARNING_SEC = 1.25;
 const WAVE_COMBAT_SEC = 35;
 const WAVE_BREAK_SEC = 15;
 const MAX_CRAFT_LEVEL = 5;
+const DIFFICULTY_TUNING: Record<GameDifficulty, DifficultyTuning> = {
+  easy: {
+    spawnCount: 0.78,
+    zombieCap: 0.82,
+    spawnDelay: 1.18,
+    zombieHp: 0.86,
+    zombieDamage: 0.75
+  },
+  normal: {
+    spawnCount: 1,
+    zombieCap: 1,
+    spawnDelay: 1,
+    zombieHp: 1,
+    zombieDamage: 1
+  },
+  hard: {
+    spawnCount: 1.22,
+    zombieCap: 1.18,
+    spawnDelay: 0.86,
+    zombieHp: 1.16,
+    zombieDamage: 1.25
+  }
+};
 const RESOURCE_DROP_WEIGHTS: Array<{ type: ResourceType; weight: number }> = [
   { type: 'partitionMaterial', weight: 22 },
   { type: 'mixCoffee', weight: 12 },
@@ -143,6 +175,7 @@ const RELIEF_SUPPLY_DROP_BONUS: Array<{ type: ResourceType; weight: number }> = 
 const DEFAULT_SETTINGS: RoomSettings = {
   maxPlayers: 6,
   gameMode: 'timedSurvival',
+  difficulty: 'normal',
   gameDurationSec: 180,
   killTarget: 100,
   pvpEnabled: false
@@ -303,9 +336,11 @@ function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string
 
 function sanitizeSettings(settings: Partial<RoomSettings>): RoomSettings {
   const gameMode = isGameMode(settings.gameMode) ? settings.gameMode : DEFAULT_SETTINGS.gameMode;
+  const difficulty = isGameDifficulty(settings.difficulty) ? settings.difficulty : DEFAULT_SETTINGS.difficulty;
   return {
     maxPlayers: clamp(Math.round(settings.maxPlayers ?? DEFAULT_SETTINGS.maxPlayers), 2, 8),
     gameMode,
+    difficulty,
     gameDurationSec: clamp(Math.round(settings.gameDurationSec ?? DEFAULT_SETTINGS.gameDurationSec), 60, 600),
     killTarget: clamp(Math.round(settings.killTarget ?? DEFAULT_SETTINGS.killTarget), 10, 1000),
     pvpEnabled: Boolean(settings.pvpEnabled)
@@ -314,6 +349,10 @@ function sanitizeSettings(settings: Partial<RoomSettings>): RoomSettings {
 
 function isGameMode(value: unknown): value is GameMode {
   return value === 'timedSurvival' || value === 'endless' || value === 'killTarget';
+}
+
+function isGameDifficulty(value: unknown): value is GameDifficulty {
+  return value === 'easy' || value === 'normal' || value === 'hard';
 }
 
 function wallsForMode(mode: GameMode) {
@@ -549,6 +588,7 @@ function roomSummaries(): RoomSummary[] {
         maxPlayers: room.settings.maxPlayers,
         readyCount: players.filter((player) => player.ready).length,
         gameMode: room.settings.gameMode,
+        difficulty: room.settings.difficulty,
         gameDurationSec: room.settings.gameDurationSec,
         killTarget: room.settings.killTarget,
         pvpEnabled: room.settings.pvpEnabled,
@@ -1293,7 +1333,8 @@ function updateZombies(room: Room) {
       }
     }
     if (distance(zombie.position, target.position) < ZOMBIE_RADIUS + PLAYER_RADIUS) {
-      const biteDamage = zombie.type === 'tanker' ? 24 * DT : zombie.type === 'runner' ? 17 * DT : 12 * DT;
+      const damageScale = DIFFICULTY_TUNING[room.settings.difficulty].zombieDamage;
+      const biteDamage = (zombie.type === 'tanker' ? 24 * DT : zombie.type === 'runner' ? 17 * DT : 12 * DT) * damageScale;
       damagePlayer(room, target, biteDamage);
     }
   }
@@ -1450,13 +1491,14 @@ function spawnWorld(room: Room, elapsed: number) {
   room.nextResourceSpawnAt -= DT;
   room.nextReliefSupplyAt -= DT;
   const director = getDirectorState(room, elapsed);
+  const difficulty = DIFFICULTY_TUNING[room.settings.difficulty];
   updateSpawnWarnings(room);
   if (room.wavePhase === 'combat' && room.nextZombieSpawnAt <= 0) {
     const pressure = Math.floor(elapsed / 30);
     const baseCount = 3 + Math.ceil(room.wave * 1.05) + Math.floor(pressure * 1.05) + Math.max(0, director.aliveCount - 1) * 1.55;
-    const easedCount = baseCount * (1 - director.earlyEase * 0.25) * (1 - director.relief * 0.38) * director.playerScale;
+    const easedCount = baseCount * (1 - director.earlyEase * 0.25) * (1 - director.relief * 0.38) * director.playerScale * difficulty.spawnCount;
     const count = Math.min(Math.max(2, Math.round(easedCount)), 22);
-    const cap = Math.round((42 + director.aliveCount * 12 + room.wave * 4) * (1 - director.relief * 0.22));
+    const cap = Math.round((42 + director.aliveCount * 12 + room.wave * 4) * (1 - director.relief * 0.22) * difficulty.zombieCap);
     const pendingCount = room.spawnWarnings.length;
     for (let i = 0; i < count && room.zombies.length + pendingCount + i < cap; i += 1) {
       room.spawnWarnings.push(createSpawnWarning(room, undefined, director));
@@ -1468,7 +1510,7 @@ function spawnWorld(room: Room, elapsed: number) {
         room.spawnWarnings.push(createSpawnWarning(room, 'runner', director, room.wave + 1));
       }
     }
-    room.nextZombieSpawnAt = Math.max(1.15, 4.4 - room.wave * 0.13 + director.earlyEase * 0.75 + director.relief * 1.65);
+    room.nextZombieSpawnAt = Math.max(1.15, (4.4 - room.wave * 0.13 + director.earlyEase * 0.75 + director.relief * 1.65) * difficulty.spawnDelay);
   }
   const resourceLimit = MAP_PRESETS[room.settings.gameMode].resourceLimit;
   if (room.nextResourceSpawnAt <= 0 && room.resources.length < resourceLimit) {
@@ -1591,10 +1633,12 @@ function createZombie(room: Room, wave: number, forcedType?: ZombieType, directo
   const runnerChance = wave >= 2 ? Math.min(0.21 + wave * 0.032, 0.46) * (1 - (director?.relief ?? 0) * 0.45) * earlyFactor : 0;
   const type: ZombieType = forcedType ?? (roll < tankerChance ? 'tanker' : roll < tankerChance + runnerChance ? 'runner' : 'normal');
   const scaling = Math.max(0, wave - 1);
+  const hpScale = DIFFICULTY_TUNING[room.settings.difficulty].zombieHp;
+  const baseHp = type === 'tanker' ? 105 + scaling * 8 : type === 'runner' ? 22 + scaling * 2 : 32 + scaling * 3;
   return {
     id: makeId('zombie'),
     type,
-    hp: type === 'tanker' ? 105 + scaling * 8 : type === 'runner' ? 22 + scaling * 2 : 32 + scaling * 3,
+    hp: Math.round(baseHp * hpScale),
     position
   };
 }
