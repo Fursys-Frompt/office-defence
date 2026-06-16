@@ -917,17 +917,17 @@ function supportLevel(player: Player, support?: SupportEquipmentType) {
 }
 
 function craftPower(level: number) {
-  return 1 + Math.max(0, level - 1) * 0.18;
+  return 1.22 + Math.max(0, level - 1) * 0.24;
 }
 
 function weaponCooldown(player: Player) {
   const comboBoost = player.combo >= 5 ? 0.9 : 1;
-  const levelBoost = 1 - Math.max(0, weaponLevel(player, player.equippedWeapon) - 1) * 0.04;
-  if (player.equippedWeapon === 'keyboardShotgun') return 1.05 * comboBoost * levelBoost;
-  if (player.equippedWeapon === 'printerCannon') return 1.65 * comboBoost * levelBoost;
-  if (player.equippedWeapon === 'plunger') return 0.9 * comboBoost * levelBoost;
-  if (player.equippedWeapon === 'corporateCardBoomerang') return 1.25 * comboBoost * levelBoost;
-  if (player.equippedWeapon === 'guardFlashlight') return 1.4 * comboBoost * levelBoost;
+  const levelBoost = Math.max(0.74, 1 - Math.max(0, weaponLevel(player, player.equippedWeapon) - 1) * 0.06);
+  if (player.equippedWeapon === 'keyboardShotgun') return 0.78 * comboBoost * levelBoost;
+  if (player.equippedWeapon === 'printerCannon') return 1.18 * comboBoost * levelBoost;
+  if (player.equippedWeapon === 'plunger') return 0.62 * comboBoost * levelBoost;
+  if (player.equippedWeapon === 'corporateCardBoomerang') return 0.86 * comboBoost * levelBoost;
+  if (player.equippedWeapon === 'guardFlashlight') return 0.95 * comboBoost * levelBoost;
   return player.combo >= 5 ? 0.44 : 0.52;
 }
 
@@ -950,18 +950,18 @@ function fireEquippedWeapon(room: Room, player: Player) {
   const power = craftPower(level);
 
   if (weapon === 'keyboardShotgun') {
-    const pelletCount = 5 + Math.floor((level - 1) / 2) * 2;
+    const pelletCount = 7 + Math.floor((level - 1) / 2) * 2;
     const center = (pelletCount - 1) / 2;
     for (let i = 0; i < pelletCount; i += 1) {
-      const dir = rotate(player.aim, (i - center) * 0.14);
+      const dir = rotate(player.aim, (i - center) * 0.13);
       room.projectiles.push({
         id: makeId('keycap'),
         ownerId: player.id,
         position: { ...player.position },
         velocity: { x: dir.x * PROJECTILE_SPEED, y: dir.y * PROJECTILE_SPEED },
-        ttl: (240 + (level - 1) * 18) / PROJECTILE_SPEED,
+        ttl: (320 + (level - 1) * 26) / PROJECTILE_SPEED,
         variant: weapon,
-        damage: (12 + player.upgrades.damage * 1.4) * power
+        damage: (16 + player.upgrades.damage * 1.8) * power
       });
     }
     return;
@@ -973,16 +973,16 @@ function fireEquippedWeapon(room: Room, player: Player) {
       ownerId: player.id,
       position: { ...player.position },
       velocity: { x: player.aim.x * 520, y: player.aim.y * 520 },
-      ttl: (380 + (level - 1) * 20) / 520,
+      ttl: (470 + (level - 1) * 30) / 520,
       variant: weapon,
-      damage: (58 + player.upgrades.damage * 2) * power,
-      radius: 70 + (level - 1) * 8
+      damage: (74 + player.upgrades.damage * 2.6) * power,
+      radius: 96 + (level - 1) * 10
     });
     return;
   }
 
   if (weapon === 'plunger') {
-    hitTargetsInCone(room, player, 92 + (level - 1) * 10, 0.74, (42 + player.upgrades.damage * 2.5) * power, 58 + (level - 1) * 8);
+    hitTargetsInCone(room, player, 132 + (level - 1) * 14, 0.92, (58 + player.upgrades.damage * 3) * power, 72 + (level - 1) * 10);
     pushFeedback(room, 'hit', {
       x: player.position.x + player.aim.x * 54,
       y: player.position.y + player.aim.y * 54
@@ -997,10 +997,10 @@ function fireEquippedWeapon(room: Room, player: Player) {
       ownerId: player.id,
       position: { ...player.position },
       velocity: { x: dir.x * 620, y: dir.y * 620 },
-      ttl: 310 / 620,
+      ttl: 410 / 620,
       variant: weapon,
-      damage: (28 + player.upgrades.damage * 1.8) * power,
-      pierce: 3 + Math.floor((level - 1) / 2)
+      damage: (38 + player.upgrades.damage * 2.2) * power,
+      pierce: 5 + Math.floor((level - 1) / 2)
     });
     room.projectiles.push({
       id: makeId('cardBack'),
@@ -1010,16 +1010,16 @@ function fireEquippedWeapon(room: Room, player: Player) {
         y: player.position.y + dir.y * 250
       },
       velocity: { x: -dir.x * 620, y: -dir.y * 620 },
-      ttl: 250 / 620,
+      ttl: 330 / 620,
       variant: weapon,
-      damage: (28 + player.upgrades.damage * 1.8) * power,
-      pierce: 3 + Math.floor((level - 1) / 2)
+      damage: (38 + player.upgrades.damage * 2.2) * power,
+      pierce: 5 + Math.floor((level - 1) / 2)
     });
     return;
   }
 
   if (weapon === 'guardFlashlight') {
-    hitTargetsInCone(room, player, 300 + (level - 1) * 28, 0.26 + (level - 1) * 0.025, (18 + player.upgrades.damage * 1.5) * power, 0);
+    hitTargetsInCone(room, player, 420 + (level - 1) * 34, 0.34 + (level - 1) * 0.03, (26 + player.upgrades.damage * 1.8) * power, 0);
     pushFeedback(room, 'hit', {
       x: player.position.x + player.aim.x * 150,
       y: player.position.y + player.aim.y * 150

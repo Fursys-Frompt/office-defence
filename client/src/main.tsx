@@ -54,6 +54,12 @@ type TutorialController = {
   onCraft: (weapon: WeaponType) => void;
   onExit: () => void;
 };
+type WaveBanner = {
+  id: string;
+  title: string;
+  detail: string;
+  tone: 'combat' | 'break' | 'countdown';
+};
 
 const socket: GameSocket = io();
 const TOUCH_CONTROL_SIDE_KEY = 'zombie-office-survival.touchControlSide';
@@ -1230,7 +1236,10 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const seenFeedback = useRef(new Set<string>());
   const visualEffects = useRef<VisualEffect[]>([]);
   const latestInputState = useRef<{ snapshot: GameSnapshot; me?: GameSnapshot['players'][number] }>({ snapshot });
+  const previousWaveKey = useRef('');
+  const previousWaveCountdownKey = useRef('');
   const audio = useRef(createAudioEngine());
+  const [waveBanner, setWaveBanner] = useState<WaveBanner | null>(null);
   const spriteSheet = useGameImage(spriteSheetUrl);
   const propAtlas = useGameImage(propAtlasUrl);
   const craftingIcons = useGameImage(craftingIconsUrl);
@@ -1478,6 +1487,51 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
     if (pendingChoices.length > 0) setUpgradeChoicesOpen(true);
   }, [pendingChoiceKey, pendingChoices.length]);
 
+  useEffect(() => {
+    if (snapshot.phase !== 'playing') return;
+    const key = `${snapshot.wave}:${snapshot.wavePhase}`;
+    if (previousWaveKey.current === key) return;
+    previousWaveKey.current = key;
+    const nextBanner: WaveBanner = snapshot.wavePhase === 'break'
+      ? {
+          id: key,
+          title: `웨이브 ${snapshot.wave} 종료`,
+          detail: `${snapshot.waveTimeRemaining}초 동안 재정비하고 제작하세요.`,
+          tone: 'break'
+        }
+      : {
+          id: key,
+          title: `웨이브 ${snapshot.wave} 시작`,
+          detail: '좀비가 몰려옵니다. 위치를 잡고 생존하세요.',
+          tone: 'combat'
+        };
+    setWaveBanner(nextBanner);
+    const timer = window.setTimeout(() => {
+      setWaveBanner((current) => current?.id === key ? null : current);
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [snapshot.phase, snapshot.wave, snapshot.wavePhase, snapshot.waveTimeRemaining]);
+
+  useEffect(() => {
+    if (snapshot.phase !== 'playing' || snapshot.wavePhase !== 'break' || snapshot.wave < 1) return;
+    const remaining = Math.ceil(snapshot.waveTimeRemaining);
+    if (remaining < 1 || remaining > 3) return;
+    const nextWave = snapshot.wave + 1;
+    const key = `${nextWave}:${remaining}`;
+    if (previousWaveCountdownKey.current === key) return;
+    previousWaveCountdownKey.current = key;
+    setWaveBanner({
+      id: `countdown:${key}`,
+      title: `${remaining}`,
+      detail: `웨이브 ${nextWave} 시작 준비`,
+      tone: 'countdown'
+    });
+    const timer = window.setTimeout(() => {
+      setWaveBanner((current) => current?.id === `countdown:${key}` ? null : current);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [snapshot.phase, snapshot.wave, snapshot.wavePhase, snapshot.waveTimeRemaining]);
+
   const chooseUpgrade = useCallback((upgradeId: string) => {
     if (tutorial?.step === 'levelup') {
       tutorial.onUpgrade();
@@ -1612,13 +1666,12 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           );
         })}
       </section>
-      <section className="hud crafting-hud">
+      <section className={nearestCraftingStation && !isSpectating ? 'hud crafting-hud' : 'hud crafting-hud compact'}>
         <div className="crafting-title">
           <strong>{nearestCraftingStation ? '제작대' : '제작대 밖'}</strong>
-          <span>{me?.equippedWeapon ? WEAPON_LABELS[me.equippedWeapon] : '기본 공격'} · {me?.equippedSupportEquipment ? SUPPORT_EQUIPMENT_LABELS[me.equippedSupportEquipment] : '보조 없음'}</span>
+          <span>{me?.equippedWeapon ? `${WEAPON_LABELS[me.equippedWeapon]} · ${weaponBenefitText(me.equippedWeapon)}` : '기본 공격'} · {me?.equippedSupportEquipment ? SUPPORT_EQUIPMENT_LABELS[me.equippedSupportEquipment] : '보조 없음'}</span>
         </div>
-        {nearestCraftingStation && !isSpectating ? (
-        <div className="material-row">
+        <div className={nearestCraftingStation && !isSpectating ? 'material-row' : 'material-row compact'}>
           {craftMaterialKeys.map((resource) => (
             <span key={resource} className={(me?.inventory[resource] ?? 0) > 0 ? 'has' : ''}>
               <i
@@ -1632,9 +1685,6 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
             </span>
           ))}
         </div>
-        ) : (
-          <p className="crafting-hint">재료를 줍고 제작대에 가까이 가면 무기와 보조장비를 만들 수 있습니다.</p>
-        )}
         {nearestCraftingStation && !isSpectating && (
           <div className="crafting-list">
             {sortedCraftWeapons.map((weapon) => {
@@ -1773,6 +1823,12 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
             <span>장비 성장</span>
             <span>랭킹 상승</span>
           </div>
+        </section>
+      )}
+      {waveBanner && (
+        <section className={`wave-banner ${waveBanner.tone}`} aria-live="polite">
+          <strong>{waveBanner.title}</strong>
+          <span>{waveBanner.detail}</span>
         </section>
       )}
       {snapshot.phase === 'paused' && (
@@ -1925,6 +1981,14 @@ function costText(cost: Partial<Record<ResourceType, number>>) {
   return Object.entries(cost)
     .map(([resource, amount]) => `${RESOURCE_LABELS[resource as ResourceType]} ${amount}`)
     .join(' · ');
+}
+
+function weaponBenefitText(weapon: WeaponType) {
+  if (weapon === 'keyboardShotgun') return '다중 탄환';
+  if (weapon === 'printerCannon') return '강한 폭발';
+  if (weapon === 'plunger') return '빠른 근접';
+  if (weapon === 'corporateCardBoomerang') return '관통 왕복';
+  return '긴 사거리';
 }
 
 function materialGlyph(resource: ResourceType) {
@@ -2158,7 +2222,18 @@ function playerAttackRange(snapshot: GameSnapshot, player: GameSnapshot['players
   const zoneBonus = snapshot.powerZones.some((zone) => Math.hypot(zone.position.x - player.position.x, zone.position.y - player.position.y) <= zone.radius)
     ? POWER_ZONE_RANGE_BONUS
     : 0;
-  return (BASE_ATTACK_RANGE + zoneBonus) * (1 + player.upgrades.range * 0.1);
+  const weaponBonus = player.equippedWeapon === 'guardFlashlight'
+    ? 90
+    : player.equippedWeapon === 'printerCannon'
+      ? 70
+      : player.equippedWeapon === 'corporateCardBoomerang'
+        ? 60
+        : player.equippedWeapon === 'keyboardShotgun'
+          ? 45
+          : player.equippedWeapon === 'plunger'
+            ? 20
+            : 0;
+  return (BASE_ATTACK_RANGE + zoneBonus + weaponBonus) * (1 + player.upgrades.range * 0.1);
 }
 
 function drawGame(
