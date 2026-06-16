@@ -80,9 +80,12 @@ label {
 }
 
 .shell {
+  height: 100dvh;
   min-height: 100%;
   display: grid;
   place-items: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px;
   background:
     linear-gradient(135deg, rgba(248, 251, 250, 0.9), rgba(222, 233, 231, 0.86)),
@@ -1183,7 +1186,8 @@ canvas {
 
 @media (max-width: 720px) {
   .shell {
-    padding: 12px;
+    place-items: start center;
+    padding: 12px 12px calc(28px + env(safe-area-inset-bottom));
   }
 
   .join-panel,
