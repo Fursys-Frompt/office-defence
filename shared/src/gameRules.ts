@@ -100,8 +100,8 @@ export const WEAPON_COSTS: Record<WeaponType, Partial<ResourceInventory>> = {
 export const SUPPORT_EQUIPMENT_COSTS: Record<SupportEquipmentType, Partial<ResourceInventory>> = {
   robotVacuumDrone: { officeMotor: 1, batteryPack: 2 },
   mzKeycap: { keycapSet: 2, batteryPack: 1 },
-  annualLeaveShield: { paperBundle: 2, approvalKit: 1 },
-  emergencyAed: { batteryPack: 2, officeMotor: 1, rubberPart: 1, approvalKit: 1 }
+  annualLeaveShield: { paperBundle: 2, partitionMaterial: 1, approvalKit: 1 },
+  emergencyAed: { mixCoffee: 1, batteryPack: 2, officeMotor: 1, rubberPart: 1, approvalKit: 1 }
 };
 
 export const FACILITY_HP: Record<FacilityType, number> = {

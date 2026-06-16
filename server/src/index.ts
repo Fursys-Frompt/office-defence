@@ -858,29 +858,25 @@ function equipSupportEquipment(player: Player, support: SupportEquipmentType) {
 
 function activateSupportEquipment(room: Room, player: Player, support: SupportEquipmentType) {
   if (player.equippedSupportEquipment !== support || !player.craftedSupportEquipment.includes(support)) return;
-  if (support === 'robotVacuumDrone' || support === 'emergencyAed') return;
+  if (support === 'robotVacuumDrone' || support === 'annualLeaveShield' || support === 'emergencyAed') return;
   const level = supportLevel(player, support);
-  const cooldown = Math.max(4.5, (support === 'mzKeycap' ? 8 : 10) - (level - 1) * 0.7);
+  const cooldown = Math.max(4.5, 8 - (level - 1) * 0.7);
   if (!canAct(room, player.id, `support:${support}`, cooldown)) return;
   player.activeSupportEquipment = support;
-  player.supportExpiresAt = elapsedSeconds(room) + (support === 'mzKeycap' ? 3 : 3.5) + (level - 1) * 0.35;
-  if (support === 'mzKeycap') {
-    const position = {
-      x: player.position.x + player.aim.x * 78,
-      y: player.position.y + player.aim.y * 78
-    };
-    room.supportZones.push({
-      id: makeId('keycap'),
-      ownerId: player.id,
-      type: support,
-      position: clampToMap(room, position, 24),
-      radius: 190 + (level - 1) * 22,
-      ttl: 3 + (level - 1) * 0.35
-    });
-    pushFeedback(room, 'build', position, '시끌');
-  } else {
-    pushFeedback(room, 'build', player.position, '연차');
-  }
+  player.supportExpiresAt = elapsedSeconds(room) + 3 + (level - 1) * 0.35;
+  const position = {
+    x: player.position.x + player.aim.x * 78,
+    y: player.position.y + player.aim.y * 78
+  };
+  room.supportZones.push({
+    id: makeId('keycap'),
+    ownerId: player.id,
+    type: support,
+    position: clampToMap(room, position, 24),
+    radius: 190 + (level - 1) * 22,
+    ttl: 3 + (level - 1) * 0.35
+  });
+  pushFeedback(room, 'build', position, '시끌');
 }
 
 function isNearCraftingStation(room: Room, player: Player) {
@@ -1337,7 +1333,18 @@ function damagePlayer(room: Room, target: Player, damage: number, attacker?: Pla
   if (!target.alive) return;
   const reduction = Math.min(0.18, target.upgrades.maxHp * 0.025);
   const shieldLevel = supportLevel(target, 'annualLeaveShield');
-  const shieldReduction = target.activeSupportEquipment === 'annualLeaveShield' && (target.supportExpiresAt ?? 0) > elapsedSeconds(room)
+  const elapsed = elapsedSeconds(room);
+  if (
+    target.equippedSupportEquipment === 'annualLeaveShield'
+    && shieldLevel > 0
+    && (target.supportExpiresAt ?? 0) <= elapsed
+    && canAct(room, target.id, 'support:annualLeaveShield:auto', Math.max(8, 14 - (shieldLevel - 1) * 1.2))
+  ) {
+    target.activeSupportEquipment = 'annualLeaveShield';
+    target.supportExpiresAt = elapsed + 2.8 + (shieldLevel - 1) * 0.3;
+    pushFeedback(room, 'build', target.position, '연차', 0.16);
+  }
+  const shieldReduction = target.activeSupportEquipment === 'annualLeaveShield' && (target.supportExpiresAt ?? 0) > elapsed
     ? Math.min(0.72, 0.45 + Math.max(0, shieldLevel - 1) * 0.06)
     : 0;
   const effectiveDamage = damage * (1 - reduction) * (1 - shieldReduction);

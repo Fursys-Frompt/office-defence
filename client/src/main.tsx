@@ -182,6 +182,13 @@ function roomInviteUrl(nextRoomId: string) {
   return url.toString();
 }
 
+function lobbyUrl() {
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
 async function copyText(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -199,13 +206,14 @@ async function copyText(text: string) {
 
 function resultShareText(snapshot: GameSnapshot, ranking: GameSnapshot['players']) {
   const top = ranking[0];
+  const shareUrl = lobbyUrl();
   const lines = [
     '[오피스 좀비 서바이벌 결과]',
     `${snapshot.roomTitle}`,
     `${snapshot.objective.label} ${objectiveSummary(snapshot.objective)}`,
     top ? `1위 ${top.nickname} | ${top.score}점 | ${top.kills}처치 | ${formatDuration(top.survivalSec)} 생존` : '',
     ...ranking.slice(1, 3).map((player, index) => `${index + 2}위 ${player.nickname} | ${player.score}점 | ${player.kills}처치`),
-    roomInviteUrl(snapshot.roomId)
+    shareUrl
   ].filter(Boolean);
   return lines.join('\n');
 }
@@ -684,7 +692,7 @@ function LobbyApp() {
     const topPlayer = ranking[0];
     const shareText = resultShareText(snapshot, ranking);
     const shareLines = shareText.split('\n');
-    const shareUrl = roomInviteUrl(snapshot.roomId);
+    const shareUrl = lobbyUrl();
     const shareTargets = externalShareTargets(shareText, shareUrl);
     const saveResultImage = async () => {
       try {
@@ -1332,7 +1340,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       if (!event.repeat && event.code === 'KeyQ') queueItemUse('mixCoffee');
       if (!event.repeat && event.code === 'KeyR') {
         const support = latestInputState.current.me?.equippedSupportEquipment;
-        if (support && support !== 'robotVacuumDrone' && support !== 'emergencyAed') queueSupportUse(support);
+        if (support && support !== 'robotVacuumDrone' && support !== 'annualLeaveShield' && support !== 'emergencyAed') queueSupportUse(support);
       }
       if (!event.repeat && event.code === 'KeyE') {
         if (selectedInstallItemRef.current === 'partitionMaterial') confirmPartitionInstall();
@@ -1732,7 +1740,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           </div>
         )}
       </section>
-      {me?.equippedSupportEquipment && me.equippedSupportEquipment !== 'robotVacuumDrone' && me.equippedSupportEquipment !== 'emergencyAed' && (
+      {me?.equippedSupportEquipment && me.equippedSupportEquipment !== 'robotVacuumDrone' && me.equippedSupportEquipment !== 'annualLeaveShield' && me.equippedSupportEquipment !== 'emergencyAed' && (
         <button
           type="button"
           className="hud support-use-button"

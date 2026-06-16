@@ -456,9 +456,10 @@ h1 {
 }
 
 .result-objective {
-  margin: -8px 0 0;
+  margin: 0;
   color: rgba(23, 33, 29, 0.66);
   font-weight: 800;
+  line-height: 1.35;
 }
 
 .result-panel {
@@ -470,6 +471,17 @@ h1 {
   align-items: start;
   justify-content: space-between;
   gap: 18px;
+}
+
+.result-header > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.result-header h1 {
+  font-size: clamp(34px, 6vw, 54px);
+  line-height: 1.08;
 }
 
 .result-badge {
@@ -1157,8 +1169,15 @@ canvas {
 }
 
 .wave-banner.countdown {
-  min-width: min(260px, calc(100vw - 32px));
+  top: 50%;
+  min-width: 0;
+  width: 128px;
+  min-height: 112px;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  padding: 14px 16px;
   background: linear-gradient(135deg, rgba(240, 200, 106, 0.96), rgba(198, 63, 63, 0.92));
+  animation-name: waveCountdownIn;
 }
 
 .wave-banner strong {
@@ -1167,8 +1186,13 @@ canvas {
 }
 
 .wave-banner.countdown strong {
-  font-size: 52px;
+  font-size: 46px;
   line-height: 0.95;
+}
+
+.wave-banner.countdown span {
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 .wave-banner span {
@@ -1185,6 +1209,17 @@ canvas {
   to {
     opacity: 1;
     transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@keyframes waveCountdownIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% - 8px)) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
   }
 }
 
@@ -1832,12 +1867,24 @@ canvas {
 
 .countdown {
   position: absolute;
-  inset: 0;
+  top: 50%;
+  left: 50%;
+  z-index: 22;
+  width: 128px;
+  min-height: 112px;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.25);
-  font-size: min(30vw, 220px);
+  transform: translate(-50%, -50%);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(240, 200, 106, 0.96), rgba(198, 63, 63, 0.92));
+  color: #f7fbfa;
+  box-shadow: 0 18px 48px rgba(23, 59, 63, 0.24);
+  font-size: 46px;
   font-weight: 800;
+  line-height: 0.95;
+  pointer-events: none;
+  animation: waveCountdownIn 240ms ease-out both;
 }
 
 .damage-vignette {
