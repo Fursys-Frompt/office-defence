@@ -37,6 +37,8 @@ import craftingIconsUrl from './assets/office-crafting-icons.png';
 import emergencyAedIconUrl from './assets/emergency-aed-icon.png';
 import propAtlasUrl from './assets/office-props-atlas.png';
 import spriteSheetUrl from './assets/office-survival-sprites.png';
+import waveMusicUrl from './assets/Wave.mp3';
+import reorganizeMusicUrl from './assets/reorganize.mp3';
 import './styles.css';
 
 type GameSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
@@ -45,6 +47,7 @@ type VisualEffect = Omit<FeedbackEvent, 'type'> & {
   startedAt: number;
 };
 type AudioCue = FeedbackEvent['type'] | 'shoot' | 'melee';
+type MusicTrack = 'combat' | 'break';
 type TouchControlSide = 'left' | 'right';
 type InstallItem = Extract<ResourceType, 'partitionMaterial'>;
 type TutorialStep = 'room' | 'ready' | 'countdown' | 'move' | 'attack' | 'levelup' | 'collect' | 'craft' | 'items' | 'complete';
@@ -1583,6 +1586,17 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   }, [me?.alive, me?.inventory.partitionMaterial]);
 
   useEffect(() => {
+    audio.current.setMusic(
+      snapshot.phase === 'playing'
+        ? snapshot.wavePhase === 'break'
+          ? 'break'
+          : 'combat'
+        : undefined,
+      snapshot.waveTimeRemaining
+    );
+  }, [snapshot.phase, snapshot.wavePhase, snapshot.waveTimeRemaining]);
+
+  useEffect(() => {
     if (me) latestRender.current = { snapshot, me };
   }, [snapshot, me]);
 
@@ -2399,10 +2413,100 @@ function createAudioEngine() {
 function createAudioEngineInternal() {
   let context: AudioContext | undefined;
   const cueCooldowns = new Map<AudioCue, number>();
+  const musicVolumes: Record<MusicTrack, number> = {
+    combat: 0.34,
+    break: 0.27
+  };
+  const musicUrls: Record<MusicTrack, string> = {
+    combat: waveMusicUrl,
+    break: reorganizeMusicUrl
+  };
+  let musicTracks: Record<MusicTrack, HTMLAudioElement> | undefined;
+  let currentMusic: MusicTrack | undefined;
+  let desiredMusic: MusicTrack | undefined;
+  let musicUnlocked = false;
+  const musicFadeTimers = new Map<MusicTrack, number>();
+  const MUSIC_FADE_SECONDS = 1.8;
+  const BREAK_END_FADE_SECONDS = 2;
+
+  const getMusicTracks = () => {
+    if (musicTracks) return musicTracks;
+    musicTracks = {
+      combat: new Audio(musicUrls.combat),
+      break: new Audio(musicUrls.break)
+    };
+    for (const [track, audio] of Object.entries(musicTracks) as Array<[MusicTrack, HTMLAudioElement]>) {
+      audio.loop = track === 'combat';
+      audio.preload = 'auto';
+      audio.volume = 0;
+    }
+    return musicTracks;
+  };
+
+  const fadeMusic = (track: MusicTrack, targetVolume: number, seconds: number, pauseWhenSilent = false) => {
+    const tracks = getMusicTracks();
+    const audio = tracks[track];
+    const existingTimer = musicFadeTimers.get(track);
+    if (existingTimer) window.clearInterval(existingTimer);
+    const startVolume = audio.volume;
+    const startedAt = performance.now();
+    const durationMs = Math.max(1, seconds * 1000);
+    const tick = () => {
+      const progress = Math.min(1, (performance.now() - startedAt) / durationMs);
+      audio.volume = startVolume + (targetVolume - startVolume) * progress;
+      if (progress < 1) return;
+      const timer = musicFadeTimers.get(track);
+      if (timer) window.clearInterval(timer);
+      musicFadeTimers.delete(track);
+      audio.volume = targetVolume;
+      if (pauseWhenSilent && targetVolume <= 0.001) audio.pause();
+    };
+    tick();
+    if (durationMs > 1) musicFadeTimers.set(track, window.setInterval(tick, 50));
+  };
+
+  const playMusicTrack = (track: MusicTrack, restart: boolean) => {
+    const audio = getMusicTracks()[track];
+    if (restart) audio.currentTime = 0;
+    void audio.play().catch(() => {
+      musicUnlocked = false;
+    });
+  };
+
+  const switchMusic = (track: MusicTrack) => {
+    const previous = currentMusic;
+    currentMusic = track;
+    playMusicTrack(track, true);
+    fadeMusic(track, musicVolumes[track], MUSIC_FADE_SECONDS);
+    if (previous && previous !== track) fadeMusic(previous, 0, MUSIC_FADE_SECONDS, true);
+  };
+
+  const stopMusic = () => {
+    if (!musicTracks) return;
+    for (const track of Object.keys(musicTracks) as MusicTrack[]) {
+      fadeMusic(track, 0, MUSIC_FADE_SECONDS, true);
+    }
+    currentMusic = undefined;
+  };
+
+  const applyDesiredMusic = (remainingSeconds?: number) => {
+    if (!musicUnlocked) return;
+    if (!desiredMusic) {
+      stopMusic();
+      return;
+    }
+    if (currentMusic !== desiredMusic) switchMusic(desiredMusic);
+    else if (currentMusic === 'break' && remainingSeconds !== undefined && remainingSeconds <= BREAK_END_FADE_SECONDS) {
+      fadeMusic('break', 0, Math.max(0.2, remainingSeconds), false);
+    }
+  };
 
   const unlock = () => {
     context ??= new AudioContext();
     if (context.state === 'suspended') void context.resume();
+    musicUnlocked = true;
+    getMusicTracks();
+    applyDesiredMusic();
   };
 
   const playTone = (frequency: number, duration: number, gainValue: number, type: OscillatorType, slideTo?: number) => {
@@ -2441,7 +2545,12 @@ function createAudioEngineInternal() {
     else if (cue === 'playerDown') playTone(140, 0.24, 0.04, 'sawtooth', 80);
   };
 
-  return { unlock, play };
+  const setMusic = (track: MusicTrack | undefined, remainingSeconds?: number) => {
+    desiredMusic = track;
+    applyDesiredMusic(remainingSeconds);
+  };
+
+  return { unlock, play, setMusic };
 }
 
 function useGameImage(url: string) {
