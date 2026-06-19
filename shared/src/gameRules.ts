@@ -62,13 +62,13 @@ export const EQUIPMENT_DESCRIPTIONS: Record<ResourceType, string> = {
   approvalKit: '법인카드 부메랑과 방어 장비 제작에 사용합니다.'
 };
 
-export const FACILITY_LABELS: Record<FacilityType, string> = {
+export const FACILITY_LABELS: Record<Exclude<FacilityType, 'supplyCache'>, string> & Partial<Record<FacilityType, string>> = {
   partitionBarricade: '파티션 바리케이드',
   deskBarricade: '책상 바리케이드',
   medStation: '탕비 거점'
 };
 
-export const FACILITY_COSTS: Record<FacilityType, Partial<ResourceInventory>> = {
+export const FACILITY_COSTS: Record<Exclude<FacilityType, 'supplyCache'>, Partial<ResourceInventory>> & Partial<Record<FacilityType, Partial<ResourceInventory>>> = {
   partitionBarricade: { partitionMaterial: 1, paperBundle: 1 },
   deskBarricade: { paperBundle: 2, rubberPart: 1 },
   medStation: { mixCoffee: 1, paperBundle: 1 }
@@ -104,7 +104,7 @@ export const SUPPORT_EQUIPMENT_COSTS: Record<SupportEquipmentType, Partial<Resou
   emergencyAed: { mixCoffee: 1, batteryPack: 2, officeMotor: 1, rubberPart: 1, approvalKit: 1 }
 };
 
-export const FACILITY_HP: Record<FacilityType, number> = {
+export const FACILITY_HP: Record<Exclude<FacilityType, 'supplyCache'>, number> & Partial<Record<FacilityType, number>> = {
   partitionBarricade: 130,
   deskBarricade: 190,
   medStation: 120

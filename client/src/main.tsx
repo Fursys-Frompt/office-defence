@@ -15,6 +15,7 @@ import type {
   ServerToClientEvents,
   SupportEquipmentType,
   UpgradeOption,
+  UpgradeType,
   Vec2,
   WeaponType
 } from '../../shared/src/types';
@@ -71,12 +72,14 @@ const TOUCH_CONTROL_SIDE_KEY = 'zombie-office-survival.touchControlSide';
 const GAME_MODE_LABELS: Record<GameMode, string> = {
   timedSurvival: '제한시간 생존',
   endless: '무제한',
-  killTarget: '좀비 처치'
+  killTarget: '좀비 처치',
+  supplyDefense: '물자 지키기'
 };
 const GAME_MODE_MAP_LABELS: Record<GameMode, string> = {
   timedSurvival: '분할 사무실',
   endless: '순환 복도',
-  killTarget: '중앙 교전 구역'
+  killTarget: '중앙 교전 구역',
+  supplyDefense: '물자 방어 구역'
 };
 type TutorialCraftFocus = 'station' | 'panel';
 const GAME_DIFFICULTY_LABELS: Record<GameDifficulty, string> = {
@@ -107,6 +110,7 @@ const WALK_FRAME_COUNT = 4;
 const MOVEMENT_HOLD_MS = 180;
 const INPUT_SEND_MS = 16;
 const ITEM_INPUT_HOLD_MS = 220;
+const OPENING_TIP_SECONDS = 3;
 const MAX_CRAFT_LEVEL = 5;
 const CAMERA_FOLLOW_AMOUNT = 0.62;
 const LOCAL_PLAYER_FOLLOW_AMOUNT = 0.84;
@@ -145,10 +149,24 @@ const CRAFTING_ICON_SPRITES: Record<ResourceType | WeaponType | SupportEquipment
 const CRAFTING_ICON_IMAGES: Partial<Record<ResourceType | WeaponType | SupportEquipmentType, string>> = {
   emergencyAed: emergencyAedIconUrl
 };
+const UPGRADE_ICON_LABELS: Record<UpgradeType, string> = {
+  range: 'RNG',
+  damage: 'DMG',
+  maxHp: 'HP',
+  moveSpeed: 'SPD',
+  coffee: 'CAF',
+  partition: 'PTN',
+  supply: 'MAT',
+  nightMove: 'NGT',
+  resourceSense: 'GET',
+  partitionReinforce: 'DEF',
+  finisher: 'FIN'
+};
 const FACILITY_SPRITES: Record<FacilityType, { col: number; row: number; size: number }> = {
   partitionBarricade: { col: 1, row: 1, size: 58 },
   deskBarricade: { col: 2, row: 1, size: 62 },
-  medStation: { col: 3, row: 1, size: 62 }
+  medStation: { col: 3, row: 1, size: 62 },
+  supplyCache: { col: 0, row: 2, size: 86 }
 };
 const DECOR_SPRITES = [
   { col: 1, row: 2, position: { x: 260, y: 210 }, size: 118 },
@@ -652,7 +670,7 @@ function LobbyApp() {
                   기본 목표
                   <input value={`${GAME_MODE_LABELS[settings.gameMode]} · ${GAME_MODE_MAP_LABELS[settings.gameMode]}`} readOnly />
                 </label>
-                {settings.gameMode === 'timedSurvival' && (
+                {(settings.gameMode === 'timedSurvival' || settings.gameMode === 'supplyDefense') && (
               <label>
                 플레이 시간(초)
                 <input
@@ -684,6 +702,7 @@ function LobbyApp() {
                       <option value="timedSurvival">제한시간 생존</option>
                       <option value="endless">무제한</option>
                       <option value="killTarget">좀비 N마리 처치</option>
+                      <option value="supplyDefense">물자 지키기</option>
                     </select>
                   </label>
                   <label>
@@ -1312,18 +1331,21 @@ function objectiveSummary(objective: GameSnapshot['objective']) {
   if (objective.mode === 'endless') return formatDuration(objective.current);
   if (objective.target === undefined) return `${objective.current}`;
   if (objective.mode === 'killTarget') return `${objective.current}/${objective.target}킬`;
+  if (objective.mode === 'supplyDefense') return `${formatDuration(objective.current)}/${formatDuration(objective.target)}`;
   return `${objective.current}/${objective.target}초`;
 }
 
 function openingObjectiveTitle(snapshot: GameSnapshot) {
   if (snapshot.objective.mode === 'killTarget') return `먼저 ${snapshot.settings.killTarget}처치 달성`;
   if (snapshot.objective.mode === 'endless') return '오래 버티고 점수 올리기';
+  if (snapshot.objective.mode === 'supplyDefense') return '물자를 지키며 버티기';
   return `${formatDuration(snapshot.settings.gameDurationSec)} 생존 경쟁`;
 }
 
 function openingObjectiveDetail(snapshot: GameSnapshot) {
   if (snapshot.objective.mode === 'killTarget') return '개인 처치 수가 목표에 먼저 도달하면 순위가 결정됩니다.';
   if (snapshot.objective.mode === 'endless') return '밤이 깊어질수록 거세지는 공세 속에서 생존 시간과 점수를 함께 끌어올리세요.';
+  if (snapshot.objective.mode === 'supplyDefense') return '쓰러져도 5초 뒤 복귀합니다. 물자 HP가 0이 되지 않게 방어하세요.';
   return '제한 시간 동안 생존, 처치, 자원 수집으로 개인 점수를 높이세요.';
 }
 
@@ -1434,6 +1456,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const [touchControlSide, setTouchControlSide] = useState<TouchControlSide>(() => readTouchControlSide());
   const [touchControlOpen, setTouchControlOpen] = useState(false);
   const [upgradeChoicesOpen, setUpgradeChoicesOpen] = useState(true);
+  const [craftingPanelOpen, setCraftingPanelOpen] = useState(false);
   const [selectedInstallItem, setSelectedInstallItem] = useState<InstallItem | null>(null);
   const selectedInstallItemRef = useRef<InstallItem | null>(null);
   const queuedItem = useRef<{ type: ResourceType; requestId: number; until: number; aim?: Vec2 } | null>(null);
@@ -1547,7 +1570,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       if (!event.repeat && event.code === 'KeyQ') queueItemUse('mixCoffee');
       if (!event.repeat && event.code === 'KeyR') {
         const support = latestInputState.current.me?.equippedSupportEquipment;
-        if (support && support !== 'robotVacuumDrone' && support !== 'annualLeaveShield' && support !== 'emergencyAed') queueSupportUse(support);
+        if (support && support !== 'robotVacuumDrone' && support !== 'mzKeycap' && support !== 'annualLeaveShield' && support !== 'emergencyAed') queueSupportUse(support);
       }
       if (!event.repeat && event.code === 'KeyE') {
         if (selectedInstallItemRef.current === 'partitionMaterial') confirmPartitionInstall();
@@ -1593,11 +1616,20 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   }, [me?.alive, me?.inventory.partitionMaterial]);
 
   useEffect(() => {
+    const music: MusicTrack | undefined = snapshot.phase === 'playing'
+      ? snapshot.dayNightPhase === 'night' || snapshot.dayNightPhase === 'dusk'
+        ? 'combat'
+        : 'break'
+      : undefined;
     audio.current.setMusic(
-      snapshot.phase === 'playing' ? 'combat' : undefined,
+      music,
       snapshot.waveTimeRemaining
     );
-  }, [snapshot.phase, snapshot.waveTimeRemaining]);
+  }, [snapshot.dayNightPhase, snapshot.phase, snapshot.waveTimeRemaining]);
+
+  useEffect(() => {
+    return () => audio.current.setMusic(undefined, 0);
+  }, []);
 
   useEffect(() => {
     if (me) latestRender.current = { snapshot, me };
@@ -1684,13 +1716,15 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const pendingChoices = me?.pendingUpgradeChoices ?? [];
   const pendingUpgradeCount = me?.pendingUpgradeCount ?? 0;
   const pendingChoiceKey = pendingChoices.map((choice) => choice.id).join('|');
-  const showOpeningTip = snapshot.phase === 'playing' && snapshot.elapsedSec < 18 && !isSpectating;
+  const showOpeningTip = snapshot.phase === 'playing' && snapshot.elapsedSec < OPENING_TIP_SECONDS && !isSpectating;
   const nearestCraftingStation = me
     ? snapshot.craftingStations
         .map((station) => ({ station, distance: Math.hypot(station.position.x - me.position.x, station.position.y - me.position.y) }))
         .filter(({ station, distance }) => distance <= station.interactionRadius)
         .sort((a, b) => a.distance - b.distance)[0]?.station
     : undefined;
+  const canUseCraftingStation = Boolean(nearestCraftingStation && !isSpectating);
+  const showCraftingPanel = canUseCraftingStation && craftingPanelOpen;
   const sortedCraftWeapons = useMemo(() => {
     return sortCraftEntries(weaponKeys, (weapon) => ({
       crafted: Boolean(me?.craftedWeapons.includes(weapon)),
@@ -1709,6 +1743,10 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   useEffect(() => {
     if (pendingChoices.length > 0) setUpgradeChoicesOpen(true);
   }, [pendingChoiceKey, pendingChoices.length]);
+
+  useEffect(() => {
+    if (!canUseCraftingStation) setCraftingPanelOpen(false);
+  }, [canUseCraftingStation]);
 
   useEffect(() => {
     if (snapshot.phase !== 'playing') return;
@@ -1862,12 +1900,12 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           );
         })}
       </section>
-      <section className={nearestCraftingStation && !isSpectating ? 'hud crafting-hud' : 'hud crafting-hud compact'}>
+      <section className={showCraftingPanel ? 'hud crafting-hud open' : canUseCraftingStation ? 'hud crafting-hud nearby' : 'hud crafting-hud compact'}>
         <div className="crafting-title">
-          <strong>{nearestCraftingStation ? '제작대' : '제작대 밖'}</strong>
+          <strong>{canUseCraftingStation ? '제작대' : '제작대 밖'}</strong>
           <span>{me?.equippedWeapon ? `${WEAPON_LABELS[me.equippedWeapon]} · ${weaponBenefitText(me.equippedWeapon)}` : '기본 공격'} · {me?.equippedSupportEquipment ? SUPPORT_EQUIPMENT_LABELS[me.equippedSupportEquipment] : '보조 없음'}</span>
         </div>
-        <div className={nearestCraftingStation && !isSpectating ? 'material-row' : 'material-row compact'}>
+        <div className={showCraftingPanel ? 'material-row' : 'material-row compact'}>
           {craftMaterialKeys.map((resource) => (
             <span key={resource} className={(me?.inventory[resource] ?? 0) > 0 ? 'has' : ''}>
               <i
@@ -1881,7 +1919,22 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
             </span>
           ))}
         </div>
-        {nearestCraftingStation && !isSpectating && (
+        {canUseCraftingStation && !showCraftingPanel && (
+          <button
+            type="button"
+            className="crafting-open-button"
+            onTouchStart={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setCraftingPanelOpen(true);
+            }}
+            onClick={() => setCraftingPanelOpen(true)}
+          >
+            <strong>제작 열기</strong>
+            <span>근처 제작대</span>
+          </button>
+        )}
+        {showCraftingPanel && (
           <div className="crafting-list">
             {sortedCraftWeapons.map((weapon) => {
               const crafted = Boolean(me?.craftedWeapons.includes(weapon));
@@ -1894,6 +1947,11 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
                   type="button"
                   className={equipped ? 'equipped' : crafted ? 'crafted' : canCraft ? 'ready' : 'locked'}
                   disabled={!crafted && !canCraft}
+                  onTouchStart={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    craftOrEquipWeapon(weapon);
+                  }}
                   onClick={() => craftOrEquipWeapon(weapon)}
                 >
                   <i
@@ -1915,6 +1973,11 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
                   type="button"
                   className={equipped ? 'equipped support' : crafted ? 'crafted support' : canCraft ? 'ready support' : 'locked support'}
                   disabled={!crafted && !canCraft}
+                  onTouchStart={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    craftOrEquipSupport(support);
+                  }}
                   onClick={() => craftOrEquipSupport(support)}
                 >
                   <i
@@ -1928,7 +1991,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           </div>
         )}
       </section>
-      {me?.equippedSupportEquipment && me.equippedSupportEquipment !== 'robotVacuumDrone' && me.equippedSupportEquipment !== 'annualLeaveShield' && me.equippedSupportEquipment !== 'emergencyAed' && (
+      {me?.equippedSupportEquipment && me.equippedSupportEquipment !== 'robotVacuumDrone' && me.equippedSupportEquipment !== 'mzKeycap' && me.equippedSupportEquipment !== 'annualLeaveShield' && me.equippedSupportEquipment !== 'emergencyAed' && (
         <button
           type="button"
           className="hud support-use-button"
@@ -1983,8 +2046,10 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
                 }}
                 onClick={() => chooseUpgrade(upgrade.id)}
               >
+                <i aria-hidden="true">{UPGRADE_ICON_LABELS[upgrade.type]}</i>
                 <strong>{upgrade.title}</strong>
                 <span>{upgrade.description}</span>
+                <b>Lv {(me?.upgrades[upgrade.type] ?? 0) + 1}</b>
               </button>
             ))}
           </div>
@@ -2077,7 +2142,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       {tutorial && (
         <TutorialOverlay
           step={tutorial.step}
-          craftFocus={nearestCraftingStation ? 'panel' : 'station'}
+          craftFocus={showCraftingPanel ? 'panel' : 'station'}
           onNext={tutorial.onNext}
           onExit={tutorial.onExit}
         />
@@ -2241,8 +2306,8 @@ function costText(cost: Partial<Record<ResourceType, number>>) {
 
 function weaponBenefitText(weapon: WeaponType) {
   if (weapon === 'keyboardShotgun') return '다중 탄환';
-  if (weapon === 'printerCannon') return '강한 폭발';
-  if (weapon === 'plunger') return '빠른 근접';
+  if (weapon === 'printerCannon') return '넓은 광역 폭발';
+  if (weapon === 'plunger') return '근접 넉백';
   if (weapon === 'corporateCardBoomerang') return '관통 왕복';
   return '야간 조명';
 }
@@ -2414,8 +2479,8 @@ function createAudioEngineInternal() {
   let context: AudioContext | undefined;
   const cueCooldowns = new Map<AudioCue, number>();
   const musicVolumes: Record<MusicTrack, number> = {
-    combat: 0.34,
-    break: 0.27
+    combat: 0.18,
+    break: 0.14
   };
   const musicUrls: Record<MusicTrack, string> = {
     combat: waveMusicUrl,
@@ -2427,7 +2492,6 @@ function createAudioEngineInternal() {
   let musicUnlocked = false;
   const musicFadeTimers = new Map<MusicTrack, number>();
   const MUSIC_FADE_SECONDS = 1.8;
-  const BREAK_END_FADE_SECONDS = 2;
 
   const getMusicTracks = () => {
     if (musicTracks) return musicTracks;
@@ -2435,8 +2499,8 @@ function createAudioEngineInternal() {
       combat: new Audio(musicUrls.combat),
       break: new Audio(musicUrls.break)
     };
-    for (const [track, audio] of Object.entries(musicTracks) as Array<[MusicTrack, HTMLAudioElement]>) {
-      audio.loop = track === 'combat';
+    for (const [, audio] of Object.entries(musicTracks) as Array<[MusicTrack, HTMLAudioElement]>) {
+      audio.loop = true;
       audio.preload = 'auto';
       audio.volume = 0;
     }
@@ -2481,10 +2545,10 @@ function createAudioEngineInternal() {
     if (previous && previous !== track) fadeMusic(previous, 0, MUSIC_FADE_SECONDS, true);
   };
 
-  const stopMusic = () => {
+  const stopMusic = (seconds = MUSIC_FADE_SECONDS) => {
     if (!musicTracks) return;
     for (const track of Object.keys(musicTracks) as MusicTrack[]) {
-      fadeMusic(track, 0, MUSIC_FADE_SECONDS, true);
+      fadeMusic(track, 0, seconds, true);
     }
     currentMusic = undefined;
   };
@@ -2492,13 +2556,10 @@ function createAudioEngineInternal() {
   const applyDesiredMusic = (remainingSeconds?: number) => {
     if (!musicUnlocked) return;
     if (!desiredMusic) {
-      stopMusic();
+      stopMusic(remainingSeconds === 0 ? 0.05 : 0.45);
       return;
     }
     if (currentMusic !== desiredMusic) switchMusic(desiredMusic);
-    else if (currentMusic === 'break' && remainingSeconds !== undefined && remainingSeconds <= BREAK_END_FADE_SECONDS) {
-      fadeMusic('break', 0, Math.max(0.2, remainingSeconds), false);
-    }
   };
 
   const unlock = () => {
@@ -2653,7 +2714,8 @@ function drawGame(
     const hpBarWidth = Math.max(48, (facility.width ?? 48) * 0.72);
     const hpBarTop = facility.position.y - (facility.height ?? 56) / 2 - 9;
     context.fillStyle = 'rgba(255,255,255,0.35)';
-    context.fillRect(facility.position.x - hpBarWidth / 2, hpBarTop, Math.max(0, facility.hp / 220) * hpBarWidth, 4);
+    const maxFacilityHp = facility.type === 'supplyCache' ? 900 : 220;
+    context.fillRect(facility.position.x - hpBarWidth / 2, hpBarTop, Math.max(0, Math.min(1, facility.hp / maxFacilityHp)) * hpBarWidth, 4);
   }
   if (partitionPreview) drawPartitionPreview(context, partitionPreview);
   for (const projectile of snapshot.projectiles) {
@@ -3155,6 +3217,10 @@ function drawWorldFacility(
     drawPartitionBarrier(context, position, facility.width, facility.height);
     return;
   }
+  if (type === 'supplyCache') {
+    drawSupplyCache(context, position, facility.hp);
+    return;
+  }
   const sprite = FACILITY_SPRITES[type];
   const size = sprite.size * 1.72;
 
@@ -3623,6 +3689,45 @@ function drawFacilityNode(context: CanvasRenderingContext2D, type: FacilityType,
     context.fill();
   }
 
+  context.restore();
+}
+
+function drawSupplyCache(context: CanvasRenderingContext2D, position: Vec2, hp: number) {
+  const pulse = 0.5 + Math.sin(performance.now() * 0.006) * 0.5;
+  context.save();
+  drawGroundBlob(context, position, 128, 'rgba(20,31,30,0.24)');
+  context.translate(position.x, position.y);
+  context.fillStyle = '#d7b56d';
+  context.strokeStyle = '#172d31';
+  context.lineWidth = 4;
+  context.beginPath();
+  context.roundRect(-58, -34, 116, 68, 8);
+  context.fill();
+  context.stroke();
+  context.fillStyle = '#b9864f';
+  context.beginPath();
+  context.roundRect(-48, -24, 42, 48, 6);
+  context.roundRect(8, -24, 40, 48, 6);
+  context.fill();
+  context.stroke();
+  context.strokeStyle = '#fff4a3';
+  context.lineWidth = 3;
+  context.setLineDash([10, 8]);
+  context.beginPath();
+  context.arc(0, 0, 82 + pulse * 8, 0, Math.PI * 2);
+  context.stroke();
+  context.setLineDash([]);
+  context.fillStyle = '#fff4a3';
+  context.font = '900 13px sans-serif';
+  context.textAlign = 'center';
+  context.strokeStyle = 'rgba(23,33,29,0.78)';
+  context.lineWidth = 3;
+  context.strokeText('물자', 0, -48);
+  context.fillText('물자', 0, -48);
+  context.fillStyle = hp <= 300 ? '#ff6f61' : '#7edc9b';
+  context.beginPath();
+  context.roundRect(-46, 40, Math.max(0, Math.min(1, hp / 900)) * 92, 7, 4);
+  context.fill();
   context.restore();
 }
 

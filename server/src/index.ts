@@ -84,6 +84,7 @@ type Room = {
   recentDamage: Map<string, { amount: number; lastAt: number }>;
   nextReliefSupplyAt: number;
   killTargetReachedAt: Map<string, number>;
+  playerRespawnAt: Map<string, number>;
   walls: Wall[];
   wallHp: Map<string, number>;
 };
@@ -130,6 +131,8 @@ const POWER_ZONE_DAMAGE_BONUS = 0.35;
 const POWER_ZONE_RANGE_BONUS = 110;
 const ZOMBIE_SPAWN_WARNING_SEC = 1.25;
 const DAY_NIGHT_CYCLE_SEC = 90;
+const SUPPLY_CACHE_HP = 900;
+const SUPPLY_DEFENSE_RESPAWN_SEC = 5;
 const MAX_CRAFT_LEVEL = 5;
 const DIFFICULTY_TUNING: Record<GameDifficulty, DifficultyTuning> = {
   easy: {
@@ -289,13 +292,35 @@ const MAP_PRESETS: Record<GameMode, MapPreset> = {
     { x: 720, y: 260, width: 60, height: 130 },
     { x: 720, y: 710, width: 60, height: 130 }
     ]
+  },
+  supplyDefense: {
+    name: '물자 방어 구역',
+    theme: 'killArena',
+    width: 1500,
+    height: 1100,
+    initialResources: 16,
+    resourceLimit: 26,
+    walls: [
+    ...boundaryWalls(1500, 1100),
+    { x: 210, y: 150, width: 360, height: 24 },
+    { x: 930, y: 150, width: 360, height: 24 },
+    { x: 210, y: 926, width: 360, height: 24 },
+    { x: 930, y: 926, width: 360, height: 24 },
+    { x: 390, y: 320, width: 24, height: 220 },
+    { x: 390, y: 640, width: 24, height: 220 },
+    { x: 1086, y: 320, width: 24, height: 220 },
+    { x: 1086, y: 640, width: 24, height: 220 },
+    { x: 560, y: 410, width: 170, height: 24 },
+    { x: 770, y: 666, width: 170, height: 24 }
+    ]
   }
 };
 
 const MODE_LABELS: Record<GameMode, string> = {
   timedSurvival: '제한시간 생존',
   endless: '무제한 생존',
-  killTarget: '좀비 처치 목표'
+  killTarget: '좀비 처치 목표',
+  supplyDefense: '물자 지키기'
 };
 
 function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string): Room {
@@ -333,7 +358,8 @@ function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string
     nextResourceSpawnAt: 0,
     recentDamage: new Map(),
     nextReliefSupplyAt: 0,
-    killTargetReachedAt: new Map(),
+  killTargetReachedAt: new Map(),
+    playerRespawnAt: new Map(),
     walls: wallsForMode(sanitizedSettings.gameMode),
     wallHp: new Map()
   };
@@ -353,7 +379,7 @@ function sanitizeSettings(settings: Partial<RoomSettings>): RoomSettings {
 }
 
 function isGameMode(value: unknown): value is GameMode {
-  return value === 'timedSurvival' || value === 'endless' || value === 'killTarget';
+  return value === 'timedSurvival' || value === 'endless' || value === 'killTarget' || value === 'supplyDefense';
 }
 
 function isGameDifficulty(value: unknown): value is GameDifficulty {
@@ -381,7 +407,7 @@ function craftingStationsForMode(mode: GameMode): CraftingStation[] {
         { x: 420, y: 210 },
         { x: map.width - 420, y: map.height - 210 }
       ]
-    : mode === 'killTarget'
+    : mode === 'killTarget' || mode === 'supplyDefense'
       ? [
           { x: 300, y: 250 },
           { x: map.width - 300, y: map.height - 250 }
@@ -566,6 +592,16 @@ function objectiveState(room: Room, elapsed: number): GameSnapshot['objective'] 
       failed
     };
   }
+  if (room.settings.gameMode === 'supplyDefense') {
+    return {
+      mode: room.settings.gameMode,
+      label: MODE_LABELS.supplyDefense,
+      current: Math.min(room.settings.gameDurationSec, Math.floor(elapsed)),
+      target: room.settings.gameDurationSec,
+      completed: room.remainingSec <= 0 && supplyCacheHp(room) > 0,
+      failed: supplyCacheHp(room) <= 0
+    };
+  }
   return {
     mode: room.settings.gameMode,
     label: MODE_LABELS.timedSurvival,
@@ -578,6 +614,7 @@ function objectiveState(room: Room, elapsed: number): GameSnapshot['objective'] 
 
 function shouldEndGame(room: Room) {
   const aliveCount = [...room.players.values()].filter((player) => player.alive).length;
+  if (room.settings.gameMode === 'supplyDefense') return room.remainingSec <= 0 || supplyCacheHp(room) <= 0;
   if (aliveCount === 0) return true;
   if (room.settings.gameMode === 'timedSurvival') return room.remainingSec <= 0;
   if (room.settings.gameMode === 'killTarget') return hasKillTargetWinner(room);
@@ -652,6 +689,7 @@ function startGame(room: Room) {
   room.recentDamage = new Map();
   room.nextReliefSupplyAt = 18;
   room.killTargetReachedAt = new Map();
+  room.playerRespawnAt = new Map();
   clearZombieAiTimers(room);
   room.zombies = [];
   room.spawnWarnings = [];
@@ -668,6 +706,7 @@ function startGame(room: Room) {
   room.walls = wallsForMode(room.settings.gameMode);
   room.wallHp = new Map();
   room.craftingStations = craftingStationsForMode(room.settings.gameMode);
+  if (room.settings.gameMode === 'supplyDefense') room.facilities.push(createSupplyCache(room));
   room.resources = Array.from({ length: MAP_PRESETS[room.settings.gameMode].initialResources }, () => createResource(room));
   for (const player of room.players.values()) {
     killTimers.delete(comboKey(room, player.id));
@@ -744,6 +783,7 @@ function tickRoom(room: Room) {
   updateDayNightCycle(room, elapsed);
   updatePowerZones(room);
   updatePlayers(room, elapsed);
+  updateRespawns(room, elapsed);
   updateProjectiles(room);
   updateZombies(room);
   spawnWorld(room, elapsed);
@@ -861,7 +901,7 @@ function processCraftingInput(room: Room, player: Player, input: PlayerInput) {
   if (input.craftWeapon) craftWeapon(room, player, input.craftWeapon);
   if (input.equipWeapon) equipWeapon(player, input.equipWeapon);
   if (input.craftSupport) craftSupportEquipment(room, player, input.craftSupport);
-  if (input.equipSupport) equipSupportEquipment(player, input.equipSupport);
+  if (input.equipSupport) equipSupportEquipment(player, input.equipSupport, room);
 }
 
 function processSupportInput(room: Room, player: Player, input: PlayerInput) {
@@ -900,33 +940,45 @@ function craftSupportEquipment(room: Room, player: Player, support: SupportEquip
   if (!cost || !hasResources(player.inventory, cost)) return;
   const currentLevel = equipmentLevel(player.supportEquipmentLevels, support, player.craftedSupportEquipment.includes(support));
   if (currentLevel >= MAX_CRAFT_LEVEL) {
-    equipSupportEquipment(player, support);
+    equipSupportEquipment(player, support, room);
     return;
   }
   spendResources(player.inventory, cost);
   if (!player.craftedSupportEquipment.includes(support)) player.craftedSupportEquipment.push(support);
   player.supportEquipmentLevels[support] = currentLevel + 1;
-  player.equippedSupportEquipment = support;
+  equipSupportEquipment(player, support, room);
   pushFeedback(room, 'build', player.position, `${supportFeedbackLabel(support)} +${player.supportEquipmentLevels[support]}`);
 }
 
-function equipSupportEquipment(player: Player, support: SupportEquipmentType) {
+function equipSupportEquipment(player: Player, support: SupportEquipmentType, room?: Room) {
   if (!player.craftedSupportEquipment.includes(support)) return;
+  clearUnequippedSupportEffects(player, support, room);
   player.equippedSupportEquipment = support;
+}
+
+function clearUnequippedSupportEffects(player: Player, nextSupport: SupportEquipmentType, room?: Room) {
+  if (player.activeSupportEquipment && player.activeSupportEquipment !== nextSupport) {
+    player.activeSupportEquipment = undefined;
+    player.supportExpiresAt = undefined;
+  }
+  if (room) room.supportZones = room.supportZones.filter((zone) => zone.ownerId !== player.id);
 }
 
 function activateSupportEquipment(room: Room, player: Player, support: SupportEquipmentType) {
   if (player.equippedSupportEquipment !== support || !player.craftedSupportEquipment.includes(support)) return;
-  if (support === 'robotVacuumDrone' || support === 'annualLeaveShield' || support === 'emergencyAed') return;
+  if (support === 'robotVacuumDrone' || support === 'mzKeycap' || support === 'annualLeaveShield' || support === 'emergencyAed') return;
   const level = supportLevel(player, support);
   const cooldown = Math.max(4.5, 8 - (level - 1) * 0.7);
   if (!canAct(room, player.id, `support:${support}`, cooldown)) return;
   player.activeSupportEquipment = support;
   player.supportExpiresAt = elapsedSeconds(room) + 3 + (level - 1) * 0.35;
-  const position = {
+  deploySupportZone(room, player, support, {
     x: player.position.x + player.aim.x * 78,
     y: player.position.y + player.aim.y * 78
-  };
+  }, level);
+}
+
+function deploySupportZone(room: Room, player: Player, support: SupportEquipmentType, position: Vec2, level: number) {
   room.supportZones.push({
     id: makeId('keycap'),
     ownerId: player.id,
@@ -1030,18 +1082,18 @@ function fireEquippedWeapon(room: Room, player: Player) {
       velocity: { x: player.aim.x * 520, y: player.aim.y * 520 },
       ttl: (470 + (level - 1) * 30) / 520,
       variant: weapon,
-      damage: (74 + player.upgrades.damage * 2.6) * power,
-      radius: 96 + (level - 1) * 10
+      damage: (68 + player.upgrades.damage * 2.8) * power,
+      radius: 128 + (level - 1) * 14
     });
     return;
   }
 
   if (weapon === 'plunger') {
-    hitTargetsInCone(room, player, 132 + (level - 1) * 14, 0.92, (58 + player.upgrades.damage * 3) * power, 72 + (level - 1) * 10);
+    hitTargetsInCone(room, player, 146 + (level - 1) * 16, 0.96, (54 + player.upgrades.damage * 2.8) * power, 132 + (level - 1) * 18);
     pushFeedback(room, 'hit', {
       x: player.position.x + player.aim.x * 54,
       y: player.position.y + player.aim.y * 54
-    }, '뻥', 0.08);
+    }, '밀쳐냄', 0.08);
     return;
   }
 
@@ -1108,7 +1160,11 @@ function updatePowerZones(room: Room) {
     .filter((zone) => zone.ttl > 0);
   room.supportZones = room.supportZones
     .map((zone) => ({ ...zone, ttl: zone.ttl - DT }))
-    .filter((zone) => zone.ttl > 0);
+    .filter((zone) => {
+      if (zone.ttl <= 0) return false;
+      const owner = room.players.get(zone.ownerId);
+      return Boolean(owner?.alive && owner.equippedSupportEquipment === zone.type);
+    });
 }
 
 function playerAttackRange(room: Room, player: Player) {
@@ -1144,7 +1200,7 @@ function buildFacility(room: Room, player: Player, type: FacilityType) {
 }
 
 function facilityCost(type: FacilityType): Partial<ResourceInventory> {
-  return FACILITY_COSTS[type];
+  return FACILITY_COSTS[type] ?? {};
 }
 
 function hasResources(inventory: ResourceInventory, cost: Partial<ResourceInventory>) {
@@ -1158,7 +1214,27 @@ function spendResources(inventory: ResourceInventory, cost: Partial<ResourceInve
 }
 
 function facilityHp(type: FacilityType) {
-  return FACILITY_HP[type];
+  return FACILITY_HP[type] ?? SUPPLY_CACHE_HP;
+}
+
+function createSupplyCache(room: Room): Facility {
+  return {
+    id: makeId('supply'),
+    type: 'supplyCache',
+    ownerId: 'system',
+    hp: SUPPLY_CACHE_HP,
+    position: { x: room.map.width / 2, y: room.map.height / 2 },
+    width: 116,
+    height: 86
+  };
+}
+
+function supplyCache(room: Room) {
+  return room.facilities.find((facility) => facility.type === 'supplyCache');
+}
+
+function supplyCacheHp(room: Room) {
+  return supplyCache(room)?.hp ?? 0;
 }
 
 function collectResources(room: Room, player: Player) {
@@ -1257,14 +1333,32 @@ function updateSupportEquipment(room: Room, player: Player, elapsed: number) {
     player.activeSupportEquipment = undefined;
     player.supportExpiresAt = undefined;
   }
-  if (player.equippedSupportEquipment !== 'robotVacuumDrone') return;
-  const level = supportLevel(player, 'robotVacuumDrone');
-  if (!canEquipmentAct(room, player.id, 'vacuumDrone', Math.max(0.55, 0.95 - (level - 1) * 0.07))) return;
-  const targets = nearestAutoAttackTargets(room, player, 1, 160 + (level - 1) * 18);
-  const target = targets[0];
-  if (!target) return;
-  damageAutoAttackTarget(room, target, (16 + player.upgrades.damage) * craftPower(level), player);
-  pushFeedback(room, 'hit', target.position, '위잉', 0.16);
+  if (player.equippedSupportEquipment === 'robotVacuumDrone') {
+    const level = supportLevel(player, 'robotVacuumDrone');
+    if (!canEquipmentAct(room, player.id, 'vacuumDrone', Math.max(0.55, 0.95 - (level - 1) * 0.07))) return;
+    const targets = nearestAutoAttackTargets(room, player, 1, 160 + (level - 1) * 18);
+    const target = targets[0];
+    if (!target) return;
+    damageAutoAttackTarget(room, target, (16 + player.upgrades.damage) * craftPower(level), player);
+    pushFeedback(room, 'hit', target.position, '위잉', 0.16);
+    return;
+  }
+  if (player.equippedSupportEquipment === 'mzKeycap') {
+    const level = supportLevel(player, 'mzKeycap');
+    if (!canEquipmentAct(room, player.id, 'mzKeycap:passive', Math.max(4.4, 7.2 - (level - 1) * 0.55))) return;
+    const nearestZombie = [...room.zombies]
+      .filter((zombie) => distance(player.position, zombie.position) <= 430 + (level - 1) * 48)
+      .sort((a, b) => distance(player.position, a.position) - distance(player.position, b.position))[0];
+    if (!nearestZombie) return;
+    const dir = normalize({
+      x: nearestZombie.position.x - player.position.x,
+      y: nearestZombie.position.y - player.position.y
+    });
+    deploySupportZone(room, player, 'mzKeycap', {
+      x: player.position.x + dir.x * 88,
+      y: player.position.y + dir.y * 88
+    }, level);
+  }
 }
 
 function updateProjectiles(room: Room) {
@@ -1315,22 +1409,23 @@ function updateProjectiles(room: Room) {
 function explodeProjectile(room: Room, projectile: GameSnapshot['projectiles'][number]) {
   const radius = projectile.radius ?? 0;
   if (radius <= 0) return;
+  const baseDamage = projectile.damage ?? 24;
   for (const zombie of room.zombies) {
     const targetDistance = distance(projectile.position, zombie.position);
     if (targetDistance <= radius) {
       const falloff = 1 - targetDistance / radius;
-      damageZombie(room, zombie, 24 * (0.45 + falloff * 0.55), projectile.ownerId);
+      damageZombie(room, zombie, baseDamage * (0.42 + falloff * 0.58), projectile.ownerId);
     }
   }
   const owner = room.players.get(projectile.ownerId);
   if (room.settings.pvpEnabled && owner) {
     for (const player of room.players.values()) {
       if (player.id !== projectile.ownerId && player.alive && distance(projectile.position, player.position) <= radius) {
-        damagePlayer(room, player, 16, owner);
+        damagePlayer(room, player, Math.max(16, baseDamage * 0.34), owner);
       }
     }
   }
-  pushFeedback(room, 'hit', projectile.position, '잼!', 0.08);
+  pushFeedback(room, 'hit', projectile.position, '광역!', 0.08);
 }
 
 function updateZombies(room: Room) {
@@ -1349,11 +1444,11 @@ function updateZombies(room: Room) {
     zombie.position = moveZombieWithPatterns(room, zombie, dir, targetPoint, zombieSpeed(zombie.type, room.wave) * chaseBoost * flashlightSlow);
 
     for (const facility of room.facilities) {
-      if (distance(zombie.position, facility.position) < ZOMBIE_RADIUS + FACILITY_RADIUS) {
-        facility.hp -= 14 * DT;
+      if (distance(zombie.position, facility.position) < ZOMBIE_RADIUS + facilityHitRadius(facility)) {
+        facility.hp -= facilityDamagePerSecond(zombie, facility) * DT;
       }
     }
-    if (distance(zombie.position, target.position) < ZOMBIE_RADIUS + PLAYER_RADIUS) {
+    if (room.players.has(target.id) && distance(zombie.position, target.position) < ZOMBIE_RADIUS + PLAYER_RADIUS) {
       const damageScale = DIFFICULTY_TUNING[room.settings.difficulty].zombieDamage;
       const biteDamage = (zombie.type === 'tanker' ? 24 * DT : zombie.type === 'runner' ? 17 * DT : 12 * DT) * damageScale;
       damagePlayer(room, target, biteDamage);
@@ -1365,6 +1460,18 @@ function updateZombies(room: Room) {
     zombieAiTimers.delete(zombieAiKey(room, zombie));
     return false;
   });
+}
+
+function facilityHitRadius(facility: Facility) {
+  if (facility.type === 'supplyCache') return Math.max(facility.width ?? 0, facility.height ?? 0, FACILITY_RADIUS * 2) / 2;
+  return FACILITY_RADIUS;
+}
+
+function facilityDamagePerSecond(zombie: Zombie, facility: Facility) {
+  if (facility.type !== 'supplyCache') return 14;
+  if (zombie.type === 'tanker') return 46;
+  if (zombie.type === 'runner') return 24;
+  return 32;
 }
 
 function damageZombie(room: Room, zombie: Zombie, damage: number, attackerId: string) {
@@ -1418,11 +1525,48 @@ function damagePlayer(room: Room, target: Player, damage: number, attacker?: Pla
   if (consumeEmergencyAed(room, target)) return;
   target.hp = 0;
   target.alive = false;
+  if (room.settings.gameMode === 'supplyDefense') {
+    room.playerRespawnAt.set(target.id, elapsed + SUPPLY_DEFENSE_RESPAWN_SEC);
+  }
   if (attacker && attacker.id !== target.id) attacker.score += 40;
   pushFeedback(room, 'playerDown', target.position, 'DOWN');
 }
 
+function updateRespawns(room: Room, elapsed: number) {
+  if (room.settings.gameMode !== 'supplyDefense') return;
+  for (const player of room.players.values()) {
+    if (player.alive) {
+      room.playerRespawnAt.delete(player.id);
+      continue;
+    }
+    const respawnAt = room.playerRespawnAt.get(player.id);
+    if (respawnAt === undefined || elapsed < respawnAt) continue;
+    player.alive = true;
+    player.hp = Math.max(1, Math.round(player.maxHp * 0.65));
+    player.position = supplyDefenseRespawnPosition(room);
+    player.combo = 0;
+    room.playerRespawnAt.delete(player.id);
+    pushFeedback(room, 'heal', player.position, '복귀', 0.12);
+  }
+}
+
+function supplyDefenseRespawnPosition(room: Room) {
+  const supply = supplyCache(room);
+  const center = supply?.position ?? { x: room.map.width / 2, y: room.map.height / 2 };
+  for (let i = 0; i < 36; i += 1) {
+    const angle = i * 1.256 + Math.random() * 0.5;
+    const radius = 150 + (i % 6) * 24;
+    const point = clampToMap(room, {
+      x: center.x + Math.cos(angle) * radius,
+      y: center.y + Math.sin(angle) * radius
+    }, PLAYER_RADIUS);
+    if (!collidesWithWalls(point, PLAYER_RADIUS, room.walls) && !collidesWithFacilities(room, point, PLAYER_RADIUS)) return point;
+  }
+  return randomFreePosition(room.walls, room.map);
+}
+
 function consumeEmergencyAed(room: Room, player: Player) {
+  if (player.equippedSupportEquipment !== 'emergencyAed') return false;
   const index = player.craftedSupportEquipment.indexOf('emergencyAed');
   if (index < 0) return false;
   const level = supportLevel(player, 'emergencyAed');
@@ -1795,6 +1939,8 @@ function chooseZombieTarget(room: Room, zombie: Zombie) {
   }
   const noisyPlayer = noisyKeycapTarget(room, zombie.position);
   if (noisyPlayer) return noisyPlayer;
+  const supplyTarget = supplyDefenseTarget(room);
+  if (supplyTarget) return supplyTarget;
   const alive = [...room.players.values()].filter((player) => player.alive);
   if (alive.length === 0) return undefined;
   if (zombie.type === 'runner') {
@@ -1814,6 +1960,40 @@ function chooseZombieTarget(room: Room, zombie: Zombie) {
       })[0];
   }
   return nearestAlivePlayer(room, zombie.position);
+}
+
+function supplyDefenseTarget(room: Room): Player | undefined {
+  if (room.settings.gameMode !== 'supplyDefense') return undefined;
+  const supply = supplyCache(room);
+  if (!supply) return undefined;
+  return {
+    id: supply.id,
+    nickname: 'supply',
+    avatarId: 0,
+    ready: false,
+    host: false,
+    alive: true,
+    hp: supply.hp,
+    maxHp: SUPPLY_CACHE_HP,
+    position: supply.position,
+    aim: { x: 1, y: 0 },
+    score: 0,
+    kills: 0,
+    combo: 0,
+    level: 1,
+    nextLevelKills: 0,
+    pendingUpgradeChoices: [],
+    pendingUpgradeCount: 0,
+    upgrades: emptyUpgrades(),
+    inventory: emptyInventory(),
+    craftedWeapons: [],
+    weaponLevels: {},
+    craftedSupportEquipment: [],
+    supportEquipmentLevels: {},
+    resourcesCollected: 0,
+    facilitiesBuilt: 0,
+    survivalSec: 0
+  };
 }
 
 function noisyKeycapTarget(room: Room, point: Vec2) {

@@ -1714,6 +1714,41 @@ canvas {
   display: none;
 }
 
+.crafting-hud.nearby {
+  width: min(360px, calc(100vw - 24px));
+  padding: 6px;
+  gap: 6px;
+}
+
+.crafting-hud.nearby .crafting-title {
+  display: none;
+}
+
+.crafting-open-button {
+  min-height: 38px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #173b3f;
+  border-color: rgba(255, 244, 163, 0.62);
+  color: #f7fbfa;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.crafting-open-button strong {
+  font-size: 13px;
+}
+
+.crafting-open-button span {
+  color: #fff4a3;
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .crafting-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1810,14 +1845,15 @@ canvas {
 }
 
 .upgrade-choice-hud {
-  right: 12px;
-  bottom: 184px;
+  top: 136px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .upgrade-choice-hud {
-  width: min(420px, calc(100vw - 24px));
+  width: min(430px, calc(100vw - 24px));
   display: grid;
-  gap: 10px;
+  gap: 7px;
   align-items: stretch;
   background: rgba(247, 251, 250, 0.68);
   border-color: rgba(255, 255, 255, 0.36);
@@ -1839,7 +1875,7 @@ canvas {
 }
 
 .upgrade-choice-title strong {
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .upgrade-choice-title span {
@@ -1880,21 +1916,39 @@ canvas {
 
 .upgrade-choice-list {
   display: grid;
-  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .upgrade-choice-list button {
-  min-height: 54px;
+  min-height: 68px;
   display: grid;
-  gap: 3px;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto 1fr;
+  gap: 4px;
   justify-items: start;
-  padding: 9px 10px;
+  align-items: center;
+  padding: 7px;
   border-radius: 8px;
   background: rgba(15, 139, 141, 0.18);
   border-color: rgba(15, 139, 141, 0.24);
   color: #17211d;
   text-align: left;
   opacity: 0.86;
+}
+
+.upgrade-choice-list button i {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #173b3f;
+  color: #fff4a3;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 950;
+  letter-spacing: 0;
 }
 
 .upgrade-choice-list button:hover,
@@ -1904,14 +1958,29 @@ canvas {
 }
 
 .upgrade-choice-list button strong {
-  font-size: 13px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.15;
 }
 
 .upgrade-choice-list button span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.upgrade-choice-list button b {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  align-self: end;
   white-space: normal;
-  color: rgba(23, 33, 29, 0.68);
-  font-size: 12px;
-  line-height: 1.25;
+  color: #0f6f72;
+  font-size: 11px;
+  font-weight: 950;
 }
 
 .ranking-mini {
@@ -2297,30 +2366,30 @@ canvas {
   }
 
   .crafting-hud {
-    left: 8px;
-    right: auto;
+    left: 96px;
+    right: 8px;
     bottom: 92px;
-    width: calc(100vw - 112px);
+    width: auto;
     max-width: none;
   }
 
   .crafting-hud.compact {
-    left: 8px;
-    right: auto;
+    left: 96px;
+    right: 8px;
     bottom: calc(8px + env(safe-area-inset-bottom));
-    width: calc(100vw - 112px);
+    width: auto;
     max-width: none;
   }
 
   .game.joystick-right .crafting-hud {
-    left: 96px;
-    right: 8px;
+    left: 8px;
+    right: 96px;
     width: auto;
   }
 
   .game.joystick-right .crafting-hud.compact {
-    left: 96px;
-    right: 8px;
+    left: 8px;
+    right: 96px;
     width: auto;
   }
 
@@ -2373,6 +2442,11 @@ canvas {
     height: 24px;
   }
 
+  .game.joystick-right .support-use-button {
+    left: 98px;
+    right: auto;
+  }
+
   .game.joystick-right .inventory-hud {
     left: auto;
     right: 8px;
@@ -2380,29 +2454,50 @@ canvas {
   }
 
   .upgrade-choice-hud {
-    right: 12px;
-    bottom: 278px;
+    top: 154px;
+    left: 50%;
+    right: auto;
+    bottom: auto;
+    transform: translateX(-50%);
   }
 
   .upgrade-choice-hud {
-    width: min(340px, calc(100vw - 24px));
+    width: min(360px, calc(100vw - 24px));
     max-width: calc(100vw - 24px);
   }
 
+  .upgrade-choice-list button {
+    min-height: 62px;
+    padding: 6px;
+  }
+
+  .upgrade-choice-list button i {
+    width: 27px;
+    height: 27px;
+    font-size: 9px;
+  }
+
+  .upgrade-choice-list button strong {
+    font-size: 11px;
+  }
+
   .tutorial-focus-levelup {
-    right: 12px;
-    bottom: 278px;
+    top: 154px;
+    left: 50%;
+    right: auto;
+    bottom: auto;
+    transform: translateX(-50%);
     width: min(340px, calc(100vw - 24px));
-    height: 240px;
+    height: 132px;
   }
 
   .game.joystick-right .upgrade-choice-hud {
-    left: 12px;
+    left: 50%;
     right: auto;
   }
 
   .game.joystick-right .tutorial-focus-levelup {
-    left: 12px;
+    left: 50%;
     right: auto;
   }
 

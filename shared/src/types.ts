@@ -1,11 +1,11 @@
 export type GamePhase = 'lobby' | 'countdown' | 'playing' | 'paused' | 'ended';
-export type GameMode = 'timedSurvival' | 'endless' | 'killTarget';
+export type GameMode = 'timedSurvival' | 'endless' | 'killTarget' | 'supplyDefense';
 export type GameDifficulty = 'easy' | 'normal' | 'hard';
 export type MapTheme = 'officeGrid' | 'serviceLoop' | 'killArena';
 export type ZombieType = 'normal' | 'runner' | 'tanker';
 export type CraftMaterialType = 'keycapSet' | 'paperBundle' | 'officeMotor' | 'batteryPack' | 'rubberPart' | 'approvalKit';
 export type ResourceType = 'partitionMaterial' | 'mixCoffee' | CraftMaterialType;
-export type FacilityType = 'partitionBarricade' | 'deskBarricade' | 'medStation';
+export type FacilityType = 'partitionBarricade' | 'deskBarricade' | 'medStation' | 'supplyCache';
 export type ResourceInventory = Record<ResourceType, number>;
 export type UpgradeType =
   | 'range'
