@@ -7,10 +7,22 @@ export type CraftMaterialType = 'keycapSet' | 'paperBundle' | 'officeMotor' | 'b
 export type ResourceType = 'partitionMaterial' | 'mixCoffee' | CraftMaterialType;
 export type FacilityType = 'partitionBarricade' | 'deskBarricade' | 'medStation';
 export type ResourceInventory = Record<ResourceType, number>;
-export type UpgradeType = 'range' | 'damage' | 'maxHp' | 'moveSpeed' | 'coffee' | 'partition';
+export type UpgradeType =
+  | 'range'
+  | 'damage'
+  | 'maxHp'
+  | 'moveSpeed'
+  | 'coffee'
+  | 'partition'
+  | 'supply'
+  | 'nightMove'
+  | 'resourceSense'
+  | 'partitionReinforce'
+  | 'finisher';
 export type WeaponType = 'keyboardShotgun' | 'printerCannon' | 'plunger' | 'corporateCardBoomerang' | 'guardFlashlight';
 export type SupportEquipmentType = 'robotVacuumDrone' | 'mzKeycap' | 'annualLeaveShield' | 'emergencyAed';
 export type WavePhase = 'combat' | 'break';
+export type DayNightPhase = 'day' | 'dusk' | 'night' | 'dawn';
 
 export type UpgradeOption = {
   id: string;
@@ -189,6 +201,9 @@ export type GameSnapshot = {
   wave: number;
   wavePhase: WavePhase;
   waveTimeRemaining: number;
+  dayNightProgress: number;
+  nightIntensity: number;
+  dayNightPhase: DayNightPhase;
   countdown: number;
   remainingSec: number;
   elapsedSec: number;

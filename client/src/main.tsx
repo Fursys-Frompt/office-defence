@@ -63,7 +63,7 @@ type WaveBanner = {
   id: string;
   title: string;
   detail: string;
-  tone: 'combat' | 'break' | 'countdown';
+  tone: 'combat' | 'break' | 'countdown' | 'night';
 };
 
 const socket: GameSocket = io();
@@ -1017,7 +1017,7 @@ function TutorialFlowScreen({ step, onNext, onExit }: { step: TutorialStep; onNe
           </div>
           <section className="hud mission-hud top-right">
             <span className="objective-chip"><strong>제한시간 생존</strong> 3:00 생존 경쟁</span>
-            <span>웨이브 <b>1</b> · 전투 준비</span>
+            <span>시간대 <b>낮</b> · 접근 적음</span>
           </section>
           <div className="countdown">3</div>
         </section>
@@ -1081,7 +1081,12 @@ function makeTutorialSnapshot(
         maxHp: 0,
         moveSpeed: 0,
         coffee: 0,
-        partition: 0
+        partition: 0,
+        supply: 0,
+        nightMove: 0,
+        resourceSense: 0,
+        partitionReinforce: 0,
+        finisher: 0
       },
       inventory,
       craftedWeapons,
@@ -1151,8 +1156,11 @@ function makeTutorialSnapshot(
       text: '재료'
     }] : [],
     wave: 1,
-    wavePhase: step === 'craft' || step === 'items' || step === 'complete' ? 'break' : 'combat',
-    waveTimeRemaining: step === 'craft' || step === 'items' || step === 'complete' ? 15 : 34,
+    wavePhase: 'combat',
+    waveTimeRemaining: 90,
+    dayNightProgress: 0.08,
+    nightIntensity: 0.06,
+    dayNightPhase: 'day',
     countdown: step === 'countdown' ? 3 : 0,
     remainingSec: 180,
     elapsedSec: step === 'complete' ? 18 : collected ? 12 : 6,
@@ -1315,7 +1323,7 @@ function openingObjectiveTitle(snapshot: GameSnapshot) {
 
 function openingObjectiveDetail(snapshot: GameSnapshot) {
   if (snapshot.objective.mode === 'killTarget') return '개인 처치 수가 목표에 먼저 도달하면 순위가 결정됩니다.';
-  if (snapshot.objective.mode === 'endless') return '웨이브 압박 속에서 생존 시간과 점수를 함께 끌어올리세요.';
+  if (snapshot.objective.mode === 'endless') return '밤이 깊어질수록 거세지는 공세 속에서 생존 시간과 점수를 함께 끌어올리세요.';
   return '제한 시간 동안 생존, 처치, 자원 수집으로 개인 점수를 높이세요.';
 }
 
@@ -1445,7 +1453,6 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const visualEffects = useRef<VisualEffect[]>([]);
   const latestInputState = useRef<{ snapshot: GameSnapshot; me?: GameSnapshot['players'][number] }>({ snapshot });
   const previousWaveKey = useRef('');
-  const previousWaveCountdownKey = useRef('');
   const audio = useRef(createAudioEngine());
   const [waveBanner, setWaveBanner] = useState<WaveBanner | null>(null);
   const spriteSheet = useGameImage(spriteSheetUrl);
@@ -1587,14 +1594,10 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
 
   useEffect(() => {
     audio.current.setMusic(
-      snapshot.phase === 'playing'
-        ? snapshot.wavePhase === 'break'
-          ? 'break'
-          : 'combat'
-        : undefined,
+      snapshot.phase === 'playing' ? 'combat' : undefined,
       snapshot.waveTimeRemaining
     );
-  }, [snapshot.phase, snapshot.wavePhase, snapshot.waveTimeRemaining]);
+  }, [snapshot.phase, snapshot.waveTimeRemaining]);
 
   useEffect(() => {
     if (me) latestRender.current = { snapshot, me };
@@ -1675,7 +1678,8 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const hp = Math.ceil(me?.hp ?? 0);
   const maxHp = Math.max(1, Math.ceil(me?.maxHp ?? 100));
   const hpPercent = Math.max(0, Math.min(100, (hp / maxHp) * 100));
-  const threat = getThreatLabel(snapshot.wave);
+  const dayNight = getDayNightLabel(snapshot);
+  const threat = getThreatLabel(snapshot.nightIntensity, snapshot.wave);
   const isSpectating = Boolean(me && !me.alive);
   const pendingChoices = me?.pendingUpgradeChoices ?? [];
   const pendingUpgradeCount = me?.pendingUpgradeCount ?? 0;
@@ -1708,48 +1712,21 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
 
   useEffect(() => {
     if (snapshot.phase !== 'playing') return;
-    const key = `${snapshot.wave}:${snapshot.wavePhase}`;
+    const key = snapshot.dayNightPhase;
     if (previousWaveKey.current === key) return;
     previousWaveKey.current = key;
-    const nextBanner: WaveBanner = snapshot.wavePhase === 'break'
-      ? {
-          id: key,
-          title: `웨이브 ${snapshot.wave} 종료`,
-          detail: `${snapshot.waveTimeRemaining}초 동안 재정비하고 제작하세요.`,
-          tone: 'break'
-        }
-      : {
-          id: key,
-          title: `웨이브 ${snapshot.wave} 시작`,
-          detail: '좀비가 몰려옵니다. 위치를 잡고 생존하세요.',
-          tone: 'combat'
-        };
+    const nextBanner: WaveBanner = {
+      id: key,
+      title: dayNight.title,
+      detail: dayNight.detail,
+      tone: snapshot.dayNightPhase === 'night' ? 'night' : snapshot.dayNightPhase === 'day' ? 'break' : 'combat'
+    };
     setWaveBanner(nextBanner);
     const timer = window.setTimeout(() => {
       setWaveBanner((current) => current?.id === key ? null : current);
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [snapshot.phase, snapshot.wave, snapshot.wavePhase, snapshot.waveTimeRemaining]);
-
-  useEffect(() => {
-    if (snapshot.phase !== 'playing' || snapshot.wavePhase !== 'break' || snapshot.wave < 1) return;
-    const remaining = Math.ceil(snapshot.waveTimeRemaining);
-    if (remaining < 1 || remaining > 3) return;
-    const nextWave = snapshot.wave + 1;
-    const key = `${nextWave}:${remaining}`;
-    if (previousWaveCountdownKey.current === key) return;
-    previousWaveCountdownKey.current = key;
-    setWaveBanner({
-      id: `countdown:${key}`,
-      title: `${remaining}`,
-      detail: `웨이브 ${nextWave} 시작 준비`,
-      tone: 'countdown'
-    });
-    const timer = window.setTimeout(() => {
-      setWaveBanner((current) => current?.id === `countdown:${key}` ? null : current);
-    }, 900);
-    return () => window.clearTimeout(timer);
-  }, [snapshot.phase, snapshot.wave, snapshot.wavePhase, snapshot.waveTimeRemaining]);
+  }, [dayNight.detail, dayNight.title, snapshot.dayNightPhase, snapshot.phase]);
 
   const chooseUpgrade = useCallback((upgradeId: string) => {
     if (tutorial?.step === 'levelup') {
@@ -2015,7 +1992,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       )}
       <section className="hud mission-hud top-right">
         <span className="objective-chip"><strong>{snapshot.objective.label}</strong> {objectiveSummary(snapshot.objective)}</span>
-        <span>웨이브 <b>{snapshot.wave}</b> · {snapshot.wavePhase === 'break' ? '제작 시간' : '전투'} {snapshot.waveTimeRemaining}초</span>
+        <span>시간대 <b>{dayNight.label}</b> · 밤 강도 {Math.round(snapshot.nightIntensity * 100)}%</span>
         <span>경과 <b>{formatDuration(snapshot.elapsedSec)}</b></span>
         <span>Lv <b>{me?.level ?? 1}</b></span>
         <span>다음 {me ? Math.max(0, me.nextLevelKills - me.kills) : 0}킬</span>
@@ -2158,7 +2135,7 @@ function TutorialOverlay({
         {step === 'countdown' && (
           <>
             <strong>3. 카운트다운 후 전투 진입</strong>
-            <p>숫자가 끝나면 웨이브가 시작됩니다. 초반에는 위치를 잡고 가까운 자원과 제작대를 확인하세요.</p>
+            <p>숫자가 끝나면 낮부터 생존이 시작됩니다. 초반에는 위치를 잡고 가까운 자원과 제작대를 확인하세요.</p>
             <div className="tutorial-step-actions">
               <button type="button" className="primary" onClick={onNext}>조작 시작</button>
             </div>
@@ -2200,8 +2177,8 @@ function TutorialOverlay({
         )}
         {step === 'items' && (
           <>
-            <strong>9. 아이템과 웨이브 사이클</strong>
-            <p>전투 중 Q는 믹스커피 회복, E는 파티션 전개입니다. 웨이브 사이의 제작 시간에는 재료를 쓰고 장비를 강화하세요.</p>
+            <strong>9. 아이템과 낮밤 사이클</strong>
+            <p>전투 중 Q는 믹스커피 회복, E는 파티션 전개입니다. 낮에 재료를 모으고 밤 공세 전에 장비를 강화하세요.</p>
             <p>보조장비는 종류마다 다릅니다. MZ의 키캡은 R로 쓰고, 로봇청소기와 연차 신청서 방패, 비상 AED는 장착 중 자동으로 작동합니다.</p>
             <div className="tutorial-step-actions">
               <button type="button" className="primary" onClick={onNext}>결과 화면 보기</button>
@@ -2267,7 +2244,7 @@ function weaponBenefitText(weapon: WeaponType) {
   if (weapon === 'printerCannon') return '강한 폭발';
   if (weapon === 'plunger') return '빠른 근접';
   if (weapon === 'corporateCardBoomerang') return '관통 왕복';
-  return '긴 사거리';
+  return '야간 조명';
 }
 
 function materialGlyph(resource: ResourceType) {
@@ -2297,6 +2274,15 @@ function normalizeInputDirection(direction?: Vec2) {
   };
 }
 
+function normalizeVector(direction: Vec2): Vec2 {
+  const length = Math.hypot(direction.x, direction.y);
+  if (length <= 0.001) return { x: 1, y: 0 };
+  return {
+    x: direction.x / length,
+    y: direction.y / length
+  };
+}
+
 function getPlacementAim(
   player: GameSnapshot['players'][number] | undefined,
   pointerAim: Vec2,
@@ -2319,10 +2305,24 @@ function getPlacementAim(
   return player?.aim ?? { x: 1, y: 0 };
 }
 
-function getThreatLabel(wave: number) {
-  if (wave >= 8) return { label: '매우 높음', tone: 'extreme' };
-  if (wave >= 5) return { label: '높음', tone: 'high' };
-  if (wave >= 3) return { label: '보통', tone: 'mid' };
+function getDayNightLabel(snapshot: GameSnapshot) {
+  if (snapshot.dayNightPhase === 'day') {
+    return { label: '낮', title: '낮으로 밝아집니다', detail: '좀비 접근이 줄어듭니다.' };
+  }
+  if (snapshot.dayNightPhase === 'dusk') {
+    return { label: '저녁', title: '해가 집니다', detail: '좀비 수가 서서히 늘어납니다.' };
+  }
+  if (snapshot.dayNightPhase === 'night') {
+    return { label: '밤', title: '밤이 깊어집니다', detail: '좀비가 대량으로 몰려옵니다.' };
+  }
+  return { label: '새벽', title: '새벽이 옵니다', detail: '공세가 서서히 잦아듭니다.' };
+}
+
+function getThreatLabel(nightIntensity: number, cycle: number) {
+  const threat = nightIntensity * 3 + Math.max(0, cycle - 1) * 0.42;
+  if (threat >= 3.2) return { label: '매우 높음', tone: 'extreme' };
+  if (threat >= 2.2) return { label: '높음', tone: 'high' };
+  if (threat >= 1.1) return { label: '보통', tone: 'mid' };
   return { label: '낮음', tone: 'low' };
 }
 
@@ -2716,6 +2716,90 @@ function drawGame(
   }
   drawVisualEffects(context, effects);
   context.restore();
+  drawNightOverlay(context, width, height, snapshot, camera);
+}
+
+function drawNightOverlay(context: CanvasRenderingContext2D, width: number, height: number, snapshot: GameSnapshot, camera: Vec2) {
+  const nightIntensity = snapshot.nightIntensity;
+  if (nightIntensity <= 0.02) return;
+  const alpha = 0.12 + nightIntensity * 0.62;
+  context.save();
+  const gradient = context.createRadialGradient(width * 0.5, height * 0.46, Math.min(width, height) * 0.1, width * 0.5, height * 0.5, Math.max(width, height) * 0.74);
+  gradient.addColorStop(0, `rgba(20, 42, 52, ${alpha * 0.58})`);
+  gradient.addColorStop(1, `rgba(7, 13, 24, ${alpha})`);
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, width, height);
+  drawFlashlightReveals(context, width, height, snapshot, camera, nightIntensity);
+  context.globalAlpha = Math.min(0.36, nightIntensity * 0.36);
+  context.fillStyle = '#b9d7ff';
+  for (let i = 0; i < 42; i += 1) {
+    const x = (i * 97) % Math.max(1, width);
+    const y = (i * 53) % Math.max(1, height * 0.62);
+    context.fillRect(x, y, 1.2, 1.2);
+  }
+  context.restore();
+}
+
+function drawFlashlightReveals(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  snapshot: GameSnapshot,
+  camera: Vec2,
+  nightIntensity: number
+) {
+  const flashlightPlayers = snapshot.players.filter((player) => player.alive && player.equippedWeapon === 'guardFlashlight');
+  if (flashlightPlayers.length === 0) return;
+  context.save();
+  context.globalCompositeOperation = 'destination-out';
+  for (const player of flashlightPlayers) {
+    const level = craftLevel(player.weaponLevels, 'guardFlashlight', player.craftedWeapons.includes('guardFlashlight'));
+    const origin = worldToScreen(player.position, width, height, camera);
+    const direction = normalizeVector(player.aim);
+    const range = (330 + level * 44) * (0.78 + nightIntensity * 0.32);
+    const halfAngle = 0.38 + level * 0.035;
+    const beam = context.createRadialGradient(origin.x, origin.y, 12, origin.x + direction.x * range * 0.58, origin.y + direction.y * range * 0.58, range);
+    beam.addColorStop(0, 'rgba(255,255,255,0.72)');
+    beam.addColorStop(0.45, 'rgba(255,255,255,0.42)');
+    beam.addColorStop(1, 'rgba(255,255,255,0)');
+    context.fillStyle = beam;
+    context.beginPath();
+    context.moveTo(origin.x, origin.y);
+    context.arc(origin.x, origin.y, range, Math.atan2(direction.y, direction.x) - halfAngle, Math.atan2(direction.y, direction.x) + halfAngle);
+    context.closePath();
+    context.fill();
+    context.beginPath();
+    context.arc(origin.x, origin.y, 78 + level * 8, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.restore();
+  context.save();
+  context.globalCompositeOperation = 'screen';
+  for (const player of flashlightPlayers) {
+    const origin = worldToScreen(player.position, width, height, camera);
+    const direction = normalizeVector(player.aim);
+    const level = craftLevel(player.weaponLevels, 'guardFlashlight', player.craftedWeapons.includes('guardFlashlight'));
+    const range = 250 + level * 36;
+    const tip = { x: origin.x + direction.x * range, y: origin.y + direction.y * range };
+    const beam = context.createLinearGradient(origin.x, origin.y, tip.x, tip.y);
+    beam.addColorStop(0, 'rgba(255,244,163,0.22)');
+    beam.addColorStop(1, 'rgba(185,215,255,0)');
+    context.strokeStyle = beam;
+    context.lineWidth = 42 + level * 4;
+    context.lineCap = 'round';
+    context.beginPath();
+    context.moveTo(origin.x, origin.y);
+    context.lineTo(tip.x, tip.y);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function worldToScreen(position: Vec2, width: number, height: number, camera: Vec2): Vec2 {
+  return {
+    x: width / 2 - camera.x + position.x,
+    y: height / 2 - camera.y + position.y
+  };
 }
 
 function drawVisualEffects(context: CanvasRenderingContext2D, effects: VisualEffect[]) {
@@ -3164,6 +3248,17 @@ function drawEquipmentAuras(context: CanvasRenderingContext2D, player: GameSnaps
   context.beginPath();
   context.arc(player.position.x, player.position.y + 2, 28, 0, Math.PI * 2);
   context.stroke();
+  if (player.equippedWeapon === 'guardFlashlight') {
+    const dir = normalizeVector(player.aim);
+    context.globalAlpha = 0.32;
+    context.strokeStyle = '#fff4a3';
+    context.lineWidth = 9;
+    context.lineCap = 'round';
+    context.beginPath();
+    context.moveTo(player.position.x + dir.x * 16, player.position.y + dir.y * 16);
+    context.lineTo(player.position.x + dir.x * 74, player.position.y + dir.y * 74);
+    context.stroke();
+  }
   context.restore();
 }
 
@@ -3186,6 +3281,29 @@ function drawPlayerSupportEquipment(context: CanvasRenderingContext2D, player: G
     context.beginPath();
     context.arc(x + Math.cos(angle) * 7, y + Math.sin(angle) * 5, 4, 0, Math.PI * 2);
     context.fill();
+  }
+  if (player.equippedSupportEquipment === 'mzKeycap') {
+    const pulse = 0.5 + Math.sin(now * 10) * 0.5;
+    const radius = 58 + pulse * 18;
+    context.globalAlpha = 0.22 + pulse * 0.18;
+    context.fillStyle = 'rgba(244,154,194,0.18)';
+    context.strokeStyle = '#f49ac2';
+    context.lineWidth = 3;
+    context.setLineDash([8, 7]);
+    context.beginPath();
+    context.arc(player.position.x, player.position.y + 2, radius, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.setLineDash([]);
+    context.globalAlpha = 0.95;
+    context.fillStyle = '#fff4a3';
+    context.strokeStyle = 'rgba(23,33,29,0.78)';
+    context.lineWidth = 3;
+    context.font = '900 11px sans-serif';
+    context.textAlign = 'center';
+    const text = pulse > 0.5 ? '딸깍' : '찰칵';
+    context.strokeText(text, player.position.x, player.position.y - 42);
+    context.fillText(text, player.position.x, player.position.y - 42);
   }
   if (player.activeSupportEquipment === 'annualLeaveShield') {
     const pulse = 0.5 + Math.sin(now * 13) * 0.5;

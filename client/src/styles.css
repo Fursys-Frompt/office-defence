@@ -1316,6 +1316,10 @@ canvas {
   background: linear-gradient(135deg, rgba(15, 139, 141, 0.94), rgba(62, 125, 99, 0.92));
 }
 
+.wave-banner.night {
+  background: linear-gradient(135deg, rgba(25, 36, 74, 0.95), rgba(198, 63, 63, 0.9));
+}
+
 .wave-banner.countdown {
   top: 50%;
   min-width: 0;

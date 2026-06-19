@@ -6,6 +6,7 @@ import { Server } from 'socket.io';
 import type {
   ClientToServerEvents,
   CraftingStation,
+  DayNightPhase,
   Facility,
   FacilityType,
   FeedbackEvent,
@@ -128,8 +129,7 @@ const POWER_ZONE_TTL = 8;
 const POWER_ZONE_DAMAGE_BONUS = 0.35;
 const POWER_ZONE_RANGE_BONUS = 110;
 const ZOMBIE_SPAWN_WARNING_SEC = 1.25;
-const WAVE_COMBAT_SEC = 35;
-const WAVE_BREAK_SEC = 15;
+const DAY_NIGHT_CYCLE_SEC = 90;
 const MAX_CRAFT_LEVEL = 5;
 const DIFFICULTY_TUNING: Record<GameDifficulty, DifficultyTuning> = {
   easy: {
@@ -199,7 +199,12 @@ const UPGRADE_POOL: Array<Omit<UpgradeOption, 'id'>> = [
   { type: 'maxHp', title: '응급 체력', description: '최대 체력이 18 증가하고 즉시 회복합니다.' },
   { type: 'moveSpeed', title: '동선 숙달', description: '이동 속도가 7% 증가합니다.' },
   { type: 'coffee', title: '카페인 충전', description: '믹스커피 회복량이 증가하고 즉시 조금 회복합니다.' },
-  { type: 'partition', title: '파티션 전개', description: '파티션 바리케이드 길이와 내구도가 증가합니다.' }
+  { type: 'partition', title: '파티션 전개', description: '파티션 바리케이드 길이와 내구도가 증가합니다.' },
+  { type: 'supply', title: '긴급 보급', description: '랜덤 제작 재료 3개를 즉시 획득합니다.' },
+  { type: 'nightMove', title: '야간 적응', description: '밤이 깊을수록 이동 속도가 증가합니다.' },
+  { type: 'resourceSense', title: '자원 감각', description: '자원 수집 반경이 증가합니다.' },
+  { type: 'partitionReinforce', title: '튼튼한 파티션', description: '설치하는 파티션 내구도가 크게 증가합니다.' },
+  { type: 'finisher', title: '마무리 일격', description: '체력이 낮은 좀비에게 주는 피해가 증가합니다.' }
 ];
 
 const rooms = new Map<string, Room>();
@@ -317,7 +322,7 @@ function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string
     feedbackEvents: [],
     wave: 1,
     wavePhase: 'combat',
-    waveTimer: WAVE_COMBAT_SEC,
+    waveTimer: DAY_NIGHT_CYCLE_SEC,
     countdown: 0,
     remainingSec: sanitizedSettings.gameMode === 'endless' ? 0 : sanitizedSettings.gameDurationSec,
     endedElapsedSec: 0,
@@ -493,6 +498,9 @@ function snapshot(room: Room): GameSnapshot {
     wave: room.wave,
     wavePhase: room.wavePhase,
     waveTimeRemaining: Math.max(0, Math.ceil(room.waveTimer)),
+    dayNightProgress: dayNightProgress(elapsedSec),
+    nightIntensity: nightIntensity(elapsedSec),
+    dayNightPhase: dayNightPhase(elapsedSec),
     countdown: Math.ceil(room.countdown),
     remainingSec: room.settings.gameMode === 'endless' ? 0 : Math.max(0, Math.ceil(room.remainingSec)),
     elapsedSec: Math.max(0, Math.floor(elapsedSec)),
@@ -510,6 +518,23 @@ function elapsedSeconds(room: Room) {
   if (room.phase === 'ended') return room.endedElapsedSec;
   if (room.settings.gameMode === 'timedSurvival') return room.settings.gameDurationSec - room.remainingSec;
   return Math.max(0, (Date.now() - room.startedAt) / 1000);
+}
+
+function dayNightProgress(elapsed: number) {
+  return ((elapsed % DAY_NIGHT_CYCLE_SEC) + DAY_NIGHT_CYCLE_SEC) % DAY_NIGHT_CYCLE_SEC / DAY_NIGHT_CYCLE_SEC;
+}
+
+function nightIntensity(elapsed: number) {
+  const progress = dayNightProgress(elapsed);
+  return clamp((1 - Math.cos(progress * Math.PI * 2)) / 2, 0, 1);
+}
+
+function dayNightPhase(elapsed: number): DayNightPhase {
+  const progress = dayNightProgress(elapsed);
+  if (progress < 0.22 || progress >= 0.9) return 'day';
+  if (progress < 0.42) return 'dusk';
+  if (progress < 0.72) return 'night';
+  return 'dawn';
 }
 
 function leadingPlayerKills(room: Room) {
@@ -570,7 +595,12 @@ function emptyUpgrades() {
     maxHp: 0,
     moveSpeed: 0,
     coffee: 0,
-    partition: 0
+    partition: 0,
+    supply: 0,
+    nightMove: 0,
+    resourceSense: 0,
+    partitionReinforce: 0,
+    finisher: 0
   };
 }
 
@@ -612,7 +642,7 @@ function startGame(room: Room) {
   room.phase = 'playing';
   room.wave = 1;
   room.wavePhase = 'combat';
-  room.waveTimer = WAVE_COMBAT_SEC;
+  room.waveTimer = DAY_NIGHT_CYCLE_SEC;
   room.remainingSec = room.settings.gameMode === 'endless' ? 0 : room.settings.gameDurationSec;
   room.endedElapsedSec = 0;
   room.startedAt = Date.now();
@@ -711,7 +741,7 @@ function tickRoom(room: Room) {
 
   if (room.settings.gameMode !== 'endless') room.remainingSec -= DT;
   const elapsed = elapsedSeconds(room);
-  updateWaveCycle(room);
+  updateDayNightCycle(room, elapsed);
   updatePowerZones(room);
   updatePlayers(room, elapsed);
   updateProjectiles(room);
@@ -723,27 +753,16 @@ function tickRoom(room: Room) {
   if (shouldEndGame(room)) endGame(room);
 }
 
-function updateWaveCycle(room: Room) {
-  room.waveTimer -= DT;
-  if (room.waveTimer > 0) return;
-
-  if (room.wavePhase === 'combat') {
-    room.wavePhase = 'break';
-    room.waveTimer = WAVE_BREAK_SEC;
-    room.zombies = [];
-    room.spawnWarnings = [];
-    clearZombieAiTimers(room);
-    room.nextZombieSpawnAt = 0;
-    room.nextResourceSpawnAt = Math.min(room.nextResourceSpawnAt, 0.6);
-    pushFeedback(room, 'build', { x: room.map.width / 2, y: room.map.height / 2 }, '제작 시간', 0.2);
-    return;
-  }
-
-  room.wave += 1;
+function updateDayNightCycle(room: Room, elapsed: number) {
+  const cycle = Math.floor(elapsed / DAY_NIGHT_CYCLE_SEC) + 1;
+  const previousCycle = room.wave;
+  room.wave = cycle;
   room.wavePhase = 'combat';
-  room.waveTimer = WAVE_COMBAT_SEC;
-  room.nextZombieSpawnAt = 0.75;
-  pushFeedback(room, 'build', { x: room.map.width / 2, y: room.map.height / 2 }, `WAVE ${room.wave}`, 0.2);
+  room.waveTimer = DAY_NIGHT_CYCLE_SEC - (elapsed % DAY_NIGHT_CYCLE_SEC);
+  if (cycle > previousCycle) {
+    room.nextZombieSpawnAt = Math.min(room.nextZombieSpawnAt, 0.8);
+    pushFeedback(room, 'build', { x: room.map.width / 2, y: room.map.height / 2 }, '새 하루', 0.2);
+  }
 }
 
 function updatePlayers(room: Room, elapsed: number) {
@@ -752,7 +771,7 @@ function updatePlayers(room: Room, elapsed: number) {
     if (!input) continue;
 
     const move = normalize(input.move);
-    const speed = player.alive ? playerMoveSpeed(player) : 255;
+    const speed = player.alive ? playerMoveSpeed(player, elapsed) : 255;
     player.position = movePlayerWithSlide(room, player.position, move, speed);
     const aim = normalize(input.aim);
     if (length(aim) > 0) player.aim = aim;
@@ -1144,8 +1163,9 @@ function facilityHp(type: FacilityType) {
 
 function collectResources(room: Room, player: Player) {
   const before = room.resources.length;
+  const collectRadius = PLAYER_RADIUS + RESOURCE_RADIUS + player.upgrades.resourceSense * 10;
   room.resources = room.resources.filter((resource) => {
-    if (distance(player.position, resource.position) < PLAYER_RADIUS + RESOURCE_RADIUS) {
+    if (distance(player.position, resource.position) < collectRadius) {
       player.inventory[resource.type] += 1;
       player.resourcesCollected += 1;
       const score = resource.type === 'mixCoffee' ? 8 : craftMaterialKeys.includes(resource.type) ? 6 : 5;
@@ -1325,7 +1345,8 @@ function updateZombies(room: Room) {
     };
     const dir = normalize({ x: targetPoint.x - zombie.position.x, y: targetPoint.y - zombie.position.y });
     const chaseBoost = distance(zombie.position, target.position) > 360 ? 1.2 : 1;
-    zombie.position = moveZombieWithPatterns(room, zombie, dir, targetPoint, zombieSpeed(zombie.type, room.wave) * chaseBoost);
+    const flashlightSlow = flashlightSlowMultiplier(room, zombie);
+    zombie.position = moveZombieWithPatterns(room, zombie, dir, targetPoint, zombieSpeed(zombie.type, room.wave) * chaseBoost * flashlightSlow);
 
     for (const facility of room.facilities) {
       if (distance(zombie.position, facility.position) < ZOMBIE_RADIUS + FACILITY_RADIUS) {
@@ -1348,10 +1369,11 @@ function updateZombies(room: Room) {
 
 function damageZombie(room: Room, zombie: Zombie, damage: number, attackerId: string) {
   if (zombie.hp <= 0) return;
-  zombie.hp -= damage;
-  pushFeedback(room, 'hit', zombie.position, `${Math.round(damage)}`, 0.08);
-  if (zombie.hp > 0) return;
   const attacker = room.players.get(attackerId);
+  const finalDamage = attacker ? zombieDamageWithUpgrades(attacker, zombie, damage) : damage;
+  zombie.hp -= finalDamage;
+  pushFeedback(room, 'hit', zombie.position, `${Math.round(finalDamage)}`, 0.08);
+  if (zombie.hp > 0) return;
   if (!attacker) return;
   attacker.kills += 1;
   registerKillTargetProgress(room, attacker);
@@ -1459,6 +1481,10 @@ function chooseUpgrade(room: Room, player: Player, upgradeId: string) {
 
 function applyUpgrade(room: Room, player: Player, type: UpgradeType) {
   player.upgrades[type] += 1;
+  if (type === 'supply') {
+    grantSupplyUpgrade(room, player);
+    return;
+  }
   if (type === 'maxHp') {
     player.maxHp += 18;
     player.hp = Math.min(player.maxHp, player.hp + 24);
@@ -1471,6 +1497,16 @@ function applyUpgrade(room: Room, player: Player, type: UpgradeType) {
   pushFeedback(room, 'build', player.position, 'UP');
 }
 
+function grantSupplyUpgrade(room: Room, player: Player) {
+  const gained: ResourceType[] = [];
+  for (let i = 0; i < 3; i += 1) {
+    const type = craftMaterialKeys[Math.floor(Math.random() * craftMaterialKeys.length)];
+    player.inventory[type] += 1;
+    gained.push(type);
+  }
+  pushFeedback(room, 'collect', player.position, `보급 +${gained.length}`);
+}
+
 function deployPartitionBarricades(room: Room, player: Player) {
   const placement = getPartitionPlacement(player.position, player.aim, player.upgrades.partition, room.walls, room.facilities);
   if (!placement.valid) return false;
@@ -1478,7 +1514,7 @@ function deployPartitionBarricades(room: Room, player: Player) {
     id: makeId('facility'),
     type: 'partitionBarricade',
     ownerId: player.id,
-    hp: 155 + player.upgrades.partition * 45,
+    hp: 155 + player.upgrades.partition * 45 + player.upgrades.partitionReinforce * 65,
     position: placement.position,
     width: placement.width,
     height: placement.height
@@ -1493,31 +1529,33 @@ function spawnWorld(room: Room, elapsed: number) {
   const director = getDirectorState(room, elapsed);
   const difficulty = DIFFICULTY_TUNING[room.settings.difficulty];
   updateSpawnWarnings(room);
-  if (room.wavePhase === 'combat' && room.nextZombieSpawnAt <= 0) {
+  if (room.nextZombieSpawnAt <= 0) {
+    const night = nightIntensity(elapsed);
+    const spawnCountScale = 0.38 + night * 1.22;
+    const spawnCapScale = 0.55 + night * 0.85;
+    const spawnDelayScale = 1.7 - night * 0.95;
     const pressure = Math.floor(elapsed / 30);
     const baseCount = 3 + Math.ceil(room.wave * 1.05) + Math.floor(pressure * 1.05) + Math.max(0, director.aliveCount - 1) * 1.55;
-    const easedCount = baseCount * (1 - director.earlyEase * 0.25) * (1 - director.relief * 0.38) * director.playerScale * difficulty.spawnCount;
-    const count = Math.min(Math.max(2, Math.round(easedCount)), 22);
-    const cap = Math.round((42 + director.aliveCount * 12 + room.wave * 4) * (1 - director.relief * 0.22) * difficulty.zombieCap);
+    const easedCount = baseCount * spawnCountScale * (1 - director.earlyEase * 0.25) * (1 - director.relief * 0.38) * director.playerScale * difficulty.spawnCount;
+    const count = Math.min(Math.max(1, Math.round(easedCount)), 26);
+    const cap = Math.round((30 + director.aliveCount * 10 + room.wave * 4) * spawnCapScale * (1 - director.relief * 0.22) * difficulty.zombieCap);
     const pendingCount = room.spawnWarnings.length;
     for (let i = 0; i < count && room.zombies.length + pendingCount + i < cap; i += 1) {
       room.spawnWarnings.push(createSpawnWarning(room, undefined, director));
     }
-    if (room.wave >= 4 && room.wave % 3 === 0 && director.relief < 0.45 && director.earlyEase <= 0) {
-      const burstCount = Math.max(1, Math.round(director.aliveCount * (2 - director.relief)));
+    if (night >= 0.72 && room.wave >= 2 && director.relief < 0.45 && director.earlyEase <= 0) {
+      const burstCount = Math.max(1, Math.round(director.aliveCount * (1.2 + night - director.relief)));
       const nextPendingCount = room.spawnWarnings.length;
       for (let i = 0; i < burstCount && room.zombies.length + nextPendingCount + i < cap; i += 1) {
         room.spawnWarnings.push(createSpawnWarning(room, 'runner', director, room.wave + 1));
       }
     }
-    room.nextZombieSpawnAt = Math.max(1.15, (4.4 - room.wave * 0.13 + director.earlyEase * 0.75 + director.relief * 1.65) * difficulty.spawnDelay);
+    room.nextZombieSpawnAt = Math.max(0.8, (4.4 - room.wave * 0.13 + director.earlyEase * 0.75 + director.relief * 1.65) * spawnDelayScale * difficulty.spawnDelay);
   }
   const resourceLimit = MAP_PRESETS[room.settings.gameMode].resourceLimit;
   if (room.nextResourceSpawnAt <= 0 && room.resources.length < resourceLimit) {
     room.resources.push(createResource(room, director));
-    room.nextResourceSpawnAt = room.wavePhase === 'break'
-      ? 2.0 + Math.random() * 2.6
-      : 4.2 + Math.random() * 5.0 - director.relief * 1.5;
+    room.nextResourceSpawnAt = 3.4 + Math.random() * 4.8 - director.relief * 1.5;
   }
   if (director.relief >= 0.62 && room.nextReliefSupplyAt <= 0 && room.resources.length < resourceLimit + 4) {
     room.resources.push(createResource(room, director, true));
@@ -1629,8 +1667,10 @@ function createZombie(room: Room, wave: number, forcedType?: ZombieType, directo
   const roll = Math.random();
   const reliefFactor = 1 - (director?.relief ?? 0) * 0.65;
   const earlyFactor = 1 - (director?.earlyEase ?? 0) * 0.8;
-  const tankerChance = wave >= 3 ? Math.min(0.055 + wave * 0.022, 0.24) * reliefFactor * earlyFactor : 0;
-  const runnerChance = wave >= 2 ? Math.min(0.21 + wave * 0.032, 0.46) * (1 - (director?.relief ?? 0) * 0.45) * earlyFactor : 0;
+  const night = nightIntensity(elapsedSeconds(room));
+  const nightTypeScale = 0.45 + night * 0.9;
+  const tankerChance = wave >= 3 ? Math.min(0.055 + wave * 0.022, 0.24) * reliefFactor * earlyFactor * nightTypeScale : 0;
+  const runnerChance = wave >= 2 ? Math.min(0.21 + wave * 0.032, 0.46) * (1 - (director?.relief ?? 0) * 0.45) * earlyFactor * nightTypeScale : 0;
   const type: ZombieType = forcedType ?? (roll < tankerChance ? 'tanker' : roll < tankerChance + runnerChance ? 'runner' : 'normal');
   const scaling = Math.max(0, wave - 1);
   const hpScale = DIFFICULTY_TUNING[room.settings.difficulty].zombieHp;
@@ -1753,6 +1793,8 @@ function chooseZombieTarget(room: Room, zombie: Zombie) {
       survivalSec: 0
     };
   }
+  const noisyPlayer = noisyKeycapTarget(room, zombie.position);
+  if (noisyPlayer) return noisyPlayer;
   const alive = [...room.players.values()].filter((player) => player.alive);
   if (alive.length === 0) return undefined;
   if (zombie.type === 'runner') {
@@ -1774,6 +1816,46 @@ function chooseZombieTarget(room: Room, zombie: Zombie) {
   return nearestAlivePlayer(room, zombie.position);
 }
 
+function noisyKeycapTarget(room: Room, point: Vec2) {
+  return [...room.players.values()]
+    .filter((player) => player.alive && player.equippedSupportEquipment === 'mzKeycap')
+    .map((player) => {
+      const level = supportLevel(player, 'mzKeycap');
+      const radius = 420 + (level - 1) * 58;
+      const targetDistance = distance(point, player.position);
+      return { player, level, radius, targetDistance };
+    })
+    .filter((candidate) => candidate.targetDistance <= candidate.radius)
+    .sort((a, b) => {
+      const aScore = a.targetDistance - a.level * 42;
+      const bScore = b.targetDistance - b.level * 42;
+      return aScore - bScore;
+    })[0]?.player;
+}
+
+function flashlightSlowMultiplier(room: Room, zombie: Zombie) {
+  const night = nightIntensity(elapsedSeconds(room));
+  if (night < 0.18) return 1;
+  let slow = 1;
+  for (const player of room.players.values()) {
+    if (!player.alive || player.equippedWeapon !== 'guardFlashlight') continue;
+    const level = weaponLevel(player, 'guardFlashlight');
+    const range = 450 + (level - 1) * 42;
+    const halfAngle = 0.46 + (level - 1) * 0.04;
+    if (!isPointInCone(player.position, player.aim, zombie.position, range, halfAngle)) continue;
+    slow = Math.min(slow, 0.78 - Math.min(0.16, (level - 1) * 0.04) - night * 0.08);
+  }
+  return clamp(slow, 0.54, 1);
+}
+
+function isPointInCone(origin: Vec2, aim: Vec2, point: Vec2, range: number, halfAngle: number) {
+  const offset = { x: point.x - origin.x, y: point.y - origin.y };
+  const targetDistance = length(offset);
+  if (targetDistance > range || targetDistance <= 0.01) return false;
+  const dir = { x: offset.x / targetDistance, y: offset.y / targetDistance };
+  return dir.x * aim.x + dir.y * aim.y >= Math.cos(halfAngle);
+}
+
 function nearestFacility(room: Room, point: Vec2) {
   return room.facilities.sort((a, b) => distance(point, a.position) - distance(point, b.position))[0];
 }
@@ -1783,12 +1865,20 @@ function rangedDamage(room: Room, player: Player) {
   return isInPowerZone(room, player.position) ? base * (1 + POWER_ZONE_DAMAGE_BONUS) : base;
 }
 
-function playerMoveSpeed(player: Player) {
-  return 220 * (1 + player.upgrades.moveSpeed * 0.07);
+function playerMoveSpeed(player: Player, elapsed: number) {
+  const nightBonus = player.upgrades.nightMove * 0.055 * nightIntensity(elapsed);
+  return 220 * (1 + player.upgrades.moveSpeed * 0.07 + nightBonus);
 }
 
 function comboDamageBonus(player: Player) {
   return 0;
+}
+
+function zombieDamageWithUpgrades(attacker: Player, zombie: Zombie, damage: number) {
+  if (attacker.upgrades.finisher <= 0) return damage;
+  const threshold = 22 + attacker.upgrades.finisher * 10;
+  if (zombie.hp > threshold) return damage;
+  return damage * (1 + attacker.upgrades.finisher * 0.18);
 }
 
 function registerKillCombo(room: Room, player: Player) {
