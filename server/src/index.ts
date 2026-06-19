@@ -786,6 +786,7 @@ function tickRoom(room: Room) {
   updateRespawns(room, elapsed);
   updateProjectiles(room);
   updateZombies(room);
+  updateSupplyCacheRecovery(room, elapsed);
   spawnWorld(room, elapsed);
   updateFeedbackEvents(room);
   applySurvivalScore(room, elapsed);
@@ -1469,9 +1470,18 @@ function facilityHitRadius(facility: Facility) {
 
 function facilityDamagePerSecond(zombie: Zombie, facility: Facility) {
   if (facility.type !== 'supplyCache') return 14;
-  if (zombie.type === 'tanker') return 46;
-  if (zombie.type === 'runner') return 24;
-  return 32;
+  if (zombie.type === 'tanker') return 38;
+  if (zombie.type === 'runner') return 18;
+  return 24;
+}
+
+function updateSupplyCacheRecovery(room: Room, elapsed: number) {
+  if (room.settings.gameMode !== 'supplyDefense') return;
+  const supply = supplyCache(room);
+  if (!supply || supply.hp <= 0 || supply.hp >= SUPPLY_CACHE_HP) return;
+  const dayStrength = 1 - nightIntensity(elapsed);
+  if (dayStrength <= 0.18) return;
+  supply.hp = Math.min(SUPPLY_CACHE_HP, supply.hp + (3 + dayStrength * 5) * DT);
 }
 
 function damageZombie(room: Room, zombie: Zombie, damage: number, attackerId: string) {
@@ -1939,6 +1949,8 @@ function chooseZombieTarget(room: Room, zombie: Zombie) {
   }
   const noisyPlayer = noisyKeycapTarget(room, zombie.position);
   if (noisyPlayer) return noisyPlayer;
+  const supplyDefender = supplyDefensePlayerTarget(room, zombie);
+  if (supplyDefender) return supplyDefender;
   const supplyTarget = supplyDefenseTarget(room);
   if (supplyTarget) return supplyTarget;
   const alive = [...room.players.values()].filter((player) => player.alive);
@@ -1960,6 +1972,29 @@ function chooseZombieTarget(room: Room, zombie: Zombie) {
       })[0];
   }
   return nearestAlivePlayer(room, zombie.position);
+}
+
+function supplyDefensePlayerTarget(room: Room, zombie: Zombie) {
+  if (room.settings.gameMode !== 'supplyDefense') return undefined;
+  const alive = [...room.players.values()].filter((player) => player.alive);
+  if (alive.length === 0) return undefined;
+  const range = zombie.type === 'runner' ? 560 : zombie.type === 'tanker' ? 260 : 420;
+  const chance = zombie.type === 'runner' ? 0.8 : zombie.type === 'tanker' ? 0.35 : 0.55;
+  const target = alive
+    .map((player) => ({ player, distance: distance(zombie.position, player.position) }))
+    .filter((candidate) => candidate.distance <= range)
+    .sort((a, b) => a.distance - b.distance)[0]?.player;
+  if (!target) return undefined;
+  return zombieAggroRoll(zombie.id, room.wave) < chance ? target : undefined;
+}
+
+function zombieAggroRoll(id: string, cycle: number) {
+  let hash = cycle * 2166136261;
+  for (let i = 0; i < id.length; i += 1) {
+    hash ^= id.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 1000) / 1000;
 }
 
 function supplyDefenseTarget(room: Room): Player | undefined {

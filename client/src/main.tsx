@@ -38,6 +38,7 @@ import craftingIconsUrl from './assets/office-crafting-icons.png';
 import emergencyAedIconUrl from './assets/emergency-aed-icon.png';
 import propAtlasUrl from './assets/office-props-atlas.png';
 import spriteSheetUrl from './assets/office-survival-sprites.png';
+import supplyCacheUrl from './assets/supply-cache.png';
 import waveMusicUrl from './assets/Wave.mp3';
 import reorganizeMusicUrl from './assets/reorganize.mp3';
 import './styles.css';
@@ -69,6 +70,7 @@ type WaveBanner = {
 
 const socket: GameSocket = io();
 const TOUCH_CONTROL_SIDE_KEY = 'zombie-office-survival.touchControlSide';
+const BGM_ENABLED_KEY = 'zombie-office-survival.bgmEnabled';
 const GAME_MODE_LABELS: Record<GameMode, string> = {
   timedSurvival: '제한시간 생존',
   endless: '무제한',
@@ -1455,6 +1457,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const joystick = useRef<{ id: number; origin: Vec2; value: Vec2 } | null>(null);
   const [touchControlSide, setTouchControlSide] = useState<TouchControlSide>(() => readTouchControlSide());
   const [touchControlOpen, setTouchControlOpen] = useState(false);
+  const [bgmEnabled, setBgmEnabled] = useState(() => readBgmEnabled());
   const [upgradeChoicesOpen, setUpgradeChoicesOpen] = useState(true);
   const [craftingPanelOpen, setCraftingPanelOpen] = useState(false);
   const [selectedInstallItem, setSelectedInstallItem] = useState<InstallItem | null>(null);
@@ -1482,6 +1485,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const propAtlas = useGameImage(propAtlasUrl);
   const craftingIcons = useGameImage(craftingIconsUrl);
   const avatarAtlas = useGameImage(avatarAtlasUrl);
+  const supplyCacheImage = useGameImage(supplyCacheUrl);
   const me = snapshot.players.find((player) => player.id === playerId);
   latestInputState.current = { snapshot, me };
 
@@ -1608,6 +1612,11 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   }, [touchControlSide]);
 
   useEffect(() => {
+    writeBgmEnabled(bgmEnabled);
+    if (!bgmEnabled) audio.current.setMusic(undefined, 0);
+  }, [bgmEnabled]);
+
+  useEffect(() => {
     selectedInstallItemRef.current = selectedInstallItem;
   }, [selectedInstallItem]);
 
@@ -1622,10 +1631,10 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
         : 'break'
       : undefined;
     audio.current.setMusic(
-      music,
+      bgmEnabled ? music : undefined,
       snapshot.waveTimeRemaining
     );
-  }, [snapshot.dayNightPhase, snapshot.phase, snapshot.waveTimeRemaining]);
+  }, [bgmEnabled, snapshot.dayNightPhase, snapshot.phase, snapshot.waveTimeRemaining]);
 
   useEffect(() => {
     return () => audio.current.setMusic(undefined, 0);
@@ -1678,6 +1687,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           propAtlas,
           craftingIcons,
           avatarAtlas,
+          supplyCacheImage,
           partitionPreview,
           visualEffects.current
         );
@@ -1686,7 +1696,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
     };
     frame = requestAnimationFrame(render);
     return () => cancelAnimationFrame(frame);
-  }, [spriteSheet, propAtlas, craftingIcons, avatarAtlas]);
+  }, [spriteSheet, propAtlas, craftingIcons, avatarAtlas, supplyCacheImage]);
 
   useEffect(() => {
     const now = performance.now();
@@ -2109,8 +2119,8 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           ⚙
         </button>
         {touchControlOpen && (
-          <section className="hud touch-control-hud" aria-label="조이스틱 위치">
-            <span>조이스틱</span>
+          <section className="hud touch-control-hud" aria-label="플레이어 설정">
+            <span>설정</span>
             <div className="touch-control-options">
               {(['left', 'right'] as const).map((side) => (
                 <button
@@ -2126,6 +2136,17 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
                   {side === 'left' ? '왼쪽' : '오른쪽'}
                 </button>
               ))}
+              <button
+                type="button"
+                className={bgmEnabled ? 'active' : ''}
+                aria-pressed={bgmEnabled}
+                onClick={() => {
+                  audio.current.unlock();
+                  setBgmEnabled((enabled) => !enabled);
+                }}
+              >
+                BGM {bgmEnabled ? 'ON' : 'OFF'}
+              </button>
             </div>
           </section>
         )}
@@ -2274,6 +2295,23 @@ function readTouchControlSide(): TouchControlSide {
 function writeTouchControlSide(side: TouchControlSide) {
   try {
     window.localStorage.setItem(TOUCH_CONTROL_SIDE_KEY, side);
+  } catch {
+    // The setting still works for the current session when persistent storage is unavailable.
+  }
+}
+
+function readBgmEnabled() {
+  if (typeof window === 'undefined') return true;
+  try {
+    return window.localStorage.getItem(BGM_ENABLED_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+function writeBgmEnabled(enabled: boolean) {
+  try {
+    window.localStorage.setItem(BGM_ENABLED_KEY, String(enabled));
   } catch {
     // The setting still works for the current session when persistent storage is unavailable.
   }
@@ -2681,6 +2719,7 @@ function drawGame(
   propAtlas: HTMLImageElement | null,
   craftingIcons: HTMLImageElement | null,
   avatarAtlas: HTMLImageElement | null,
+  supplyCacheImage: HTMLImageElement | null,
   partitionPreview: PartitionPlacement | undefined,
   effects: VisualEffect[]
 ) {
@@ -2710,7 +2749,7 @@ function drawGame(
     drawSupportZone(context, zone);
   }
   for (const facility of snapshot.facilities) {
-    drawWorldFacility(context, propAtlas, facility);
+    drawWorldFacility(context, propAtlas, supplyCacheImage, facility);
     const hpBarWidth = Math.max(48, (facility.width ?? 48) * 0.72);
     const hpBarTop = facility.position.y - (facility.height ?? 56) / 2 - 9;
     context.fillStyle = 'rgba(255,255,255,0.35)';
@@ -3210,6 +3249,7 @@ function drawSupportZone(context: CanvasRenderingContext2D, zone: GameSnapshot['
 function drawWorldFacility(
   context: CanvasRenderingContext2D,
   propAtlas: HTMLImageElement | null,
+  supplyCacheImage: HTMLImageElement | null,
   facility: GameSnapshot['facilities'][number]
 ) {
   const { type, position } = facility;
@@ -3218,7 +3258,7 @@ function drawWorldFacility(
     return;
   }
   if (type === 'supplyCache') {
-    drawSupplyCache(context, position, facility.hp);
+    drawSupplyCache(context, position, facility.hp, supplyCacheImage);
     return;
   }
   const sprite = FACILITY_SPRITES[type];
@@ -3692,10 +3732,13 @@ function drawFacilityNode(context: CanvasRenderingContext2D, type: FacilityType,
   context.restore();
 }
 
-function drawSupplyCache(context: CanvasRenderingContext2D, position: Vec2, hp: number) {
+function drawSupplyCache(context: CanvasRenderingContext2D, position: Vec2, hp: number, image: HTMLImageElement | null) {
   const pulse = 0.5 + Math.sin(performance.now() * 0.006) * 0.5;
   context.save();
   drawGroundBlob(context, position, 128, 'rgba(20,31,30,0.24)');
+  if (image) {
+    context.drawImage(image, position.x - 74, position.y - 78, 148, 148);
+  } else {
   context.translate(position.x, position.y);
   context.fillStyle = '#d7b56d';
   context.strokeStyle = '#172d31';
@@ -3710,6 +3753,9 @@ function drawSupplyCache(context: CanvasRenderingContext2D, position: Vec2, hp: 
   context.roundRect(8, -24, 40, 48, 6);
   context.fill();
   context.stroke();
+  context.translate(-position.x, -position.y);
+  }
+  context.translate(position.x, position.y);
   context.strokeStyle = '#fff4a3';
   context.lineWidth = 3;
   context.setLineDash([10, 8]);
