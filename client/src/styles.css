@@ -1600,6 +1600,7 @@ canvas {
   width: min(520px, calc(100vw - 24px));
   display: grid;
   gap: 8px;
+  z-index: 9;
 }
 
 .crafting-title {
@@ -1726,9 +1727,12 @@ canvas {
 }
 
 .crafting-hud.nearby {
-  width: min(360px, calc(100vw - 24px));
-  padding: 6px;
-  gap: 6px;
+  width: min(420px, calc(100vw - 24px));
+  padding: 10px;
+  gap: 8px;
+  border-color: rgba(255, 244, 163, 0.68);
+  background: rgba(247, 251, 250, 0.94);
+  box-shadow: 0 14px 42px rgba(23, 59, 63, 0.22);
 }
 
 .crafting-hud.nearby .crafting-title {
@@ -1736,13 +1740,13 @@ canvas {
 }
 
 .crafting-open-button {
-  min-height: 36px;
+  min-height: 46px;
   display: inline-flex;
   justify-content: center;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
-  justify-self: start;
-  padding: 0 12px;
+  justify-self: stretch;
+  padding: 0 18px;
   border-radius: 8px;
   background: #173b3f;
   border-color: rgba(255, 244, 163, 0.62);
@@ -1752,7 +1756,7 @@ canvas {
 }
 
 .crafting-open-button strong {
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .crafting-open-button span,

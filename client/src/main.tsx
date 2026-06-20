@@ -77,6 +77,8 @@ type WaveBanner = {
 };
 
 const socket: GameSocket = io();
+const CLIENT_SESSION_KEY = 'zombie-office-survival.clientSessionId';
+const CLIENT_SESSION_ID = readClientSessionId();
 const TOUCH_CONTROL_SIDE_KEY = 'zombie-office-survival.touchControlSide';
 const BGM_ENABLED_KEY = 'zombie-office-survival.bgmEnabled';
 const GAME_MODE_LABELS: Record<GameMode, string> = {
@@ -418,6 +420,11 @@ function LobbyApp() {
   const [shareStatus, setShareStatus] = useState('');
   const settingsRoomRef = useRef('');
   const deepLinkHandledRef = useRef(false);
+  const roomIdRef = useRef('');
+  const nicknameRef = useRef('');
+  const avatarIdRef = useRef(0);
+  const joinedOnceRef = useRef(false);
+  const reconnectRequestRef = useRef('');
   const [settings, setSettings] = useState<RoomSettings>({
     maxPlayers: 6,
     gameMode: 'timedSurvival',
@@ -432,7 +439,15 @@ function LobbyApp() {
   };
 
   useEffect(() => {
+    roomIdRef.current = roomId;
+    nicknameRef.current = nickname;
+    avatarIdRef.current = avatarId;
+  }, [avatarId, nickname, roomId]);
+
+  useEffect(() => {
     socket.on('joined', (payload) => {
+      joinedOnceRef.current = true;
+      roomIdRef.current = payload.roomId;
       setRoomId(payload.roomId);
       setPlayerId(payload.playerId);
       setPendingAction(null);
@@ -441,16 +456,33 @@ function LobbyApp() {
       url.searchParams.set('room', payload.roomId);
       window.history.replaceState(null, '', url);
     });
-    socket.on('connect', refreshRooms);
-    socket.on('snapshot', setSnapshot);
+    const handleConnect = () => {
+      refreshRooms();
+      if (!joinedOnceRef.current || !roomIdRef.current) return;
+      socket.emit('joinRoom', {
+        nickname: nicknameRef.current.trim() || '생존자',
+        roomId: roomIdRef.current,
+        avatarId: avatarIdRef.current,
+        sessionId: CLIENT_SESSION_ID
+      });
+    };
+    const handleSnapshot = (nextSnapshot: GameSnapshot) => {
+      setSnapshot((current) => {
+        const expectedRoomId = roomIdRef.current;
+        if (expectedRoomId && nextSnapshot.roomId !== expectedRoomId) return current;
+        return nextSnapshot;
+      });
+    };
+    socket.on('connect', handleConnect);
+    socket.on('snapshot', handleSnapshot);
     socket.on('errorMessage', setError);
     refreshRooms();
     const roomRefreshTimer = window.setInterval(refreshRooms, 2500);
     return () => {
       window.clearInterval(roomRefreshTimer);
-      socket.off('connect', refreshRooms);
+      socket.off('connect', handleConnect);
       socket.off('joined');
-      socket.off('snapshot');
+      socket.off('snapshot', handleSnapshot);
       socket.off('errorMessage');
     };
   }, []);
@@ -473,6 +505,19 @@ function LobbyApp() {
 
   const me = snapshot?.players.find((player) => player.id === playerId);
 
+  useEffect(() => {
+    if (!snapshot || !roomId || me || !joinedOnceRef.current || !socket.connected) return;
+    const key = `${roomId}:${socket.id}`;
+    if (reconnectRequestRef.current === key) return;
+    reconnectRequestRef.current = key;
+    socket.emit('joinRoom', {
+      nickname: nicknameRef.current.trim() || '생존자',
+      roomId,
+      avatarId: avatarIdRef.current,
+      sessionId: CLIENT_SESSION_ID
+    });
+  }, [me, roomId, snapshot]);
+
   const updateRoomSettings = (nextSettings: RoomSettings) => {
     setSettings(nextSettings);
     if (snapshot?.phase === 'lobby' && me?.host) socket.emit('updateSettings', nextSettings);
@@ -490,12 +535,14 @@ function LobbyApp() {
       roomId: pendingAction.mode === 'join' ? pendingAction.roomId : undefined,
       roomTitle: pendingAction.mode === 'create' ? roomTitle : undefined,
       avatarId,
-      settings: pendingAction.mode === 'create' ? settings : undefined
+      settings: pendingAction.mode === 'create' ? settings : undefined,
+      sessionId: CLIENT_SESSION_ID
     });
   };
 
   const leaveRoom = () => {
     socket.emit('leaveRoom');
+    joinedOnceRef.current = false;
     settingsRoomRef.current = '';
     setRoomId('');
     setPlayerId('');
@@ -510,6 +557,7 @@ function LobbyApp() {
 
   const createNewRoom = () => {
     socket.emit('leaveRoom');
+    joinedOnceRef.current = false;
     settingsRoomRef.current = '';
     setRoomId('');
     setPlayerId('');
@@ -536,6 +584,19 @@ function LobbyApp() {
 
   if (tutorialOpen) {
     return <TutorialGame onExit={() => setTutorialOpen(false)} />;
+  }
+
+  if (snapshot && roomId && !me) {
+    return (
+      <main className="shell intro">
+        <section className="join-panel reconnect-panel">
+          <p className="eyebrow">Reconnecting</p>
+          <h1>방 연결 복구 중</h1>
+          <p className="subtitle">모바일 네트워크가 잠시 흔들린 것 같아요. 같은 세션으로 다시 입장하고 있습니다.</p>
+          <button type="button" onClick={leaveRoom}>로비로 나가기</button>
+        </section>
+      </main>
+    );
   }
 
   if (!snapshot || !me) {
@@ -1304,7 +1365,7 @@ function GameGuideModal({ onClose, onStartTutorial }: { onClose: () => void; onS
           </article>
           <article>
             <strong>조작</strong>
-            <p>WASD로 이동합니다. 자동 조준이 가까운 대상을 공격합니다. Q는 구급, E는 안전지대 설치/수리입니다.</p>
+            <p>WASD로 이동합니다. 자동 조준이 가까운 대상을 공격합니다. Q는 구급, E는 안전지대 설치/수리, F는 쓰러진 동료 구조입니다.</p>
           </article>
           <article>
             <strong>난이도</strong>
@@ -1568,7 +1629,8 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       equipSupport: craftRequest?.equipSupport,
       craftRequestId: craftRequest?.requestId,
       activateSupport: supportRequest?.type,
-      supportRequestId: supportRequest?.requestId
+      supportRequestId: supportRequest?.requestId,
+      revive: Boolean(canFight && pressed.current.has('KeyF'))
     };
     if (tutorial) tutorial.onMove(move);
     else socket.emit('input', input);
@@ -1839,6 +1901,28 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
     }
     socket.emit('chooseUpgrade', upgradeId);
   }, [tutorial]);
+
+  useEffect(() => {
+    if (pendingChoices.length === 0 || isSpectating) return;
+    const onUpgradeKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      const target = event.target as HTMLElement | null;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      const index = event.code === 'Digit1' || event.code === 'Numpad1'
+        ? 0
+        : event.code === 'Digit2' || event.code === 'Numpad2'
+          ? 1
+          : event.code === 'Digit3' || event.code === 'Numpad3'
+            ? 2
+            : -1;
+      const choice = index >= 0 ? pendingChoices[index] : undefined;
+      if (!choice) return;
+      event.preventDefault();
+      chooseUpgrade(choice.id);
+    };
+    window.addEventListener('keydown', onUpgradeKeyDown);
+    return () => window.removeEventListener('keydown', onUpgradeKeyDown);
+  }, [chooseUpgrade, isSpectating, pendingChoices]);
 
   const activateUsableItem = useCallback((resource: ResourceType) => {
     if (isSpectating) return;
@@ -2392,6 +2476,19 @@ function writeTouchControlSide(side: TouchControlSide) {
   }
 }
 
+function readClientSessionId() {
+  const fallback = `session_${Math.random().toString(36).slice(2, 12)}`;
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const existing = window.localStorage.getItem(CLIENT_SESSION_KEY);
+    if (existing) return existing;
+    window.localStorage.setItem(CLIENT_SESSION_KEY, fallback);
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function readBgmEnabled() {
   if (typeof window === 'undefined') return true;
   try {
@@ -2887,7 +2984,8 @@ function drawGame(
       player.id === socket.id ? LOCAL_PLAYER_FOLLOW_AMOUNT : REMOTE_ENTITY_FOLLOW_AMOUNT
     );
     const drawPosition = { x: baseDrawPosition.x + shake, y: baseDrawPosition.y };
-    context.globalAlpha = player.alive ? 1 : 0.35;
+    const downed = isPlayerDowned(player);
+    context.globalAlpha = player.alive ? 1 : downed ? 0.78 : 0.35;
     drawShadow(context, drawPosition, 28 + pulse * 3);
     const accentColor = player.id === socket.id ? '#7bdff2' : playerColor(player.id);
     const sprite = avatarSprite(player.avatarId);
@@ -2900,16 +2998,20 @@ function drawGame(
     context.beginPath();
     context.arc(drawPosition.x, drawPosition.y, player.id === socket.id ? 21 : 19, 0, Math.PI * 2);
     context.stroke();
-    context.strokeStyle = '#ffffff';
-    context.lineWidth = 2;
-    context.beginPath();
-    context.moveTo(drawPosition.x, drawPosition.y);
-    context.lineTo(drawPosition.x + player.aim.x * 24, drawPosition.y + player.aim.y * 24);
-    context.stroke();
+    if (downed) {
+      drawDownedIndicator(context, drawPosition, player, snapshot.elapsedSec);
+    } else {
+      context.strokeStyle = '#ffffff';
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(drawPosition.x, drawPosition.y);
+      context.lineTo(drawPosition.x + player.aim.x * 24, drawPosition.y + player.aim.y * 24);
+      context.stroke();
+    }
     const visualPlayer = { ...player, position: drawPosition };
     drawEquipmentAuras(context, visualPlayer);
     drawPlayerSupportEquipment(context, visualPlayer);
-    drawPlayerNameplate(context, player.nickname, player.hp, drawPosition, accentColor, player.alive);
+    drawPlayerNameplate(context, player.nickname, player.hp, drawPosition, accentColor, player.alive, snapshot.elapsedSec, player);
     context.globalAlpha = 1;
   }
   drawVisualEffects(context, effects);
@@ -3965,19 +4067,22 @@ function drawPlayerNameplate(
   hp: number,
   position: Vec2,
   accentColor: string,
-  alive: boolean
+  alive: boolean,
+  elapsedSec: number,
+  player?: GameSnapshot['players'][number]
 ) {
+  const downed = player ? isPlayerDowned(player) : false;
   const label = fitCanvasText(context, nickname, 92);
   const x = position.x;
   const y = position.y - 50;
   const width = Math.max(78, Math.min(124, context.measureText(label).width + 28));
-  const height = 30;
+  const height = downed ? 38 : 30;
   const left = x - width / 2;
   const top = y - height;
   const hpRatio = Math.max(0, Math.min(1, hp / 100));
 
   context.save();
-  context.globalAlpha *= alive ? 1 : 0.72;
+  context.globalAlpha *= alive ? 1 : downed ? 0.92 : 0.72;
   context.fillStyle = 'rgba(247,251,250,0.9)';
   context.strokeStyle = accentColor;
   context.lineWidth = 2;
@@ -3989,17 +4094,60 @@ function drawPlayerNameplate(
   context.font = 'bold 11px sans-serif';
   context.textAlign = 'center';
   context.textBaseline = 'middle';
-  context.fillStyle = alive ? '#17211d' : '#4f5960';
-  context.fillText(alive ? label : `${label} 쓰러짐`, x, top + 10);
+  context.fillStyle = alive ? '#17211d' : downed ? '#7b341e' : '#4f5960';
+  const statusLabel = alive ? label : downed ? `${label} 기절` : `${label} 사망`;
+  context.fillText(statusLabel, x, top + 10);
 
   context.fillStyle = 'rgba(23,59,63,0.16)';
   context.beginPath();
   context.roundRect(left + 8, top + 20, width - 16, 5, 3);
   context.fill();
-  context.fillStyle = hpRatio > 0.55 ? '#7edc9b' : hpRatio > 0.25 ? '#f0c86a' : '#ff6f61';
+  context.fillStyle = downed ? '#f0c86a' : hpRatio > 0.55 ? '#7edc9b' : hpRatio > 0.25 ? '#f0c86a' : '#ff6f61';
   context.beginPath();
-  context.roundRect(left + 8, top + 20, (width - 16) * hpRatio, 5, 3);
+  context.roundRect(left + 8, top + 20, (width - 16) * (downed ? Math.max(0, Math.min(1, player?.reviveProgress ?? 0)) : hpRatio), 5, 3);
   context.fill();
+
+  if (downed && player?.downedUntil !== undefined) {
+    context.font = '800 9px sans-serif';
+    context.fillStyle = '#7b341e';
+    context.fillText(`${Math.max(0, Math.ceil(player.downedUntil - elapsedSec))}초 · F 구조`, x, top + 31);
+  }
+  context.restore();
+}
+
+function isPlayerDowned(player: GameSnapshot['players'][number]) {
+  return !player.alive && !player.dead && player.downedUntil !== undefined;
+}
+
+function drawDownedIndicator(
+  context: CanvasRenderingContext2D,
+  position: Vec2,
+  player: GameSnapshot['players'][number],
+  elapsedSec: number
+) {
+  const remainingRatio = player.downedUntil === undefined ? 0 : Math.max(0, Math.min(1, (player.downedUntil - elapsedSec) / 30));
+  const reviveRatio = Math.max(0, Math.min(1, player.reviveProgress ?? 0));
+  context.save();
+  context.strokeStyle = '#ff6f61';
+  context.lineWidth = 4;
+  context.beginPath();
+  context.arc(position.x, position.y, 27, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * remainingRatio);
+  context.stroke();
+  if (reviveRatio > 0) {
+    context.strokeStyle = '#7edc9b';
+    context.lineWidth = 5;
+    context.beginPath();
+    context.arc(position.x, position.y, 33, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * reviveRatio);
+    context.stroke();
+  }
+  context.fillStyle = '#fff4a3';
+  context.font = '900 13px sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.strokeStyle = 'rgba(23,33,29,0.8)';
+  context.lineWidth = 3;
+  context.strokeText('!', position.x, position.y);
+  context.fillText('!', position.x, position.y);
   context.restore();
 }
 

@@ -55,6 +55,7 @@ type Room = {
   processedItemRequests: Map<string, number>;
   processedCraftRequests: Map<string, number>;
   processedSupportRequests: Map<string, number>;
+  reviveProgress: Map<string, number>;
   zombies: Zombie[];
   spawnWarnings: SpawnWarning[];
   resources: ResourceNode[];
@@ -141,6 +142,9 @@ const ZOMBIE_SPAWN_WARNING_SEC = 1.25;
 const DAY_NIGHT_CYCLE_SEC = 90;
 const SUPPLY_CACHE_HP = 900;
 const SUPPLY_DEFENSE_RESPAWN_SEC = 5;
+const DOWNED_DURATION_SEC = 30;
+const REVIVE_DURATION_SEC = 3.2;
+const REVIVE_RADIUS = 78;
 const MAX_CRAFT_LEVEL = 5;
 const DIFFICULTY_TUNING: Record<GameDifficulty, DifficultyTuning> = {
   easy: {
@@ -220,6 +224,7 @@ const UPGRADE_POOL: Array<Omit<UpgradeOption, 'id'>> = [
 
 const rooms = new Map<string, Room>();
 const socketRooms = new Map<string, string>();
+const disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const killTimers = new Map<string, number>();
 const equipmentTimers = new Map<string, number>();
 const feedbackTimers = new Map<string, number>();
@@ -344,6 +349,7 @@ function createRoom(id: string, settings?: Partial<RoomSettings>, title?: string
   processedItemRequests: new Map(),
   processedCraftRequests: new Map(),
   processedSupportRequests: new Map(),
+  reviveProgress: new Map(),
   zombies: [],
   spawnWarnings: [],
   resources: [],
@@ -448,15 +454,19 @@ function makeId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function createPlayer(id: string, nickname: string, host: boolean, avatarId = 0, spectator = false): Player {
+function createPlayer(id: string, nickname: string, host: boolean, avatarId = 0, spectator = false, sessionId?: string): Player {
   return {
     id,
+    sessionId,
     nickname: nickname.trim().slice(0, 16) || 'Survivor',
     avatarId: sanitizeAvatarId(avatarId),
     spectator,
     ready: false,
     host,
     alive: !spectator,
+    dead: false,
+    downedUntil: undefined,
+    reviveProgress: 0,
     hp: 100,
     maxHp: 100,
     position: randomFreePosition(),
@@ -558,6 +568,14 @@ function alivePlayers(room: Room) {
   return activePlayers(room).filter((player) => player.alive);
 }
 
+function downedPlayers(room: Room) {
+  return activePlayers(room).filter((player) => isDowned(player));
+}
+
+function isDowned(player: Player) {
+  return !player.alive && !player.dead && player.downedUntil !== undefined;
+}
+
 function broadcast(room: Room) {
   io.to(room.id).emit('snapshot', snapshot(room));
 }
@@ -638,7 +656,7 @@ function objectiveState(room: Room, elapsed: number): GameSnapshot['objective'] 
 function shouldEndGame(room: Room) {
   const aliveCount = alivePlayers(room).length;
   if (room.settings.gameMode === 'supplyDefense') return room.remainingSec <= 0 || supplyCacheHp(room) <= 0;
-  if (aliveCount === 0) return true;
+  if (aliveCount === 0 && downedPlayers(room).length === 0) return true;
   if (room.settings.gameMode === 'timedSurvival') return room.remainingSec <= 0;
   if (room.settings.gameMode === 'killTarget') return hasKillTargetWinner(room);
   return false;
@@ -741,6 +759,9 @@ function startGame(room: Room) {
     clearFeedbackTimers(room, player.id);
     player.ready = false;
     player.alive = true;
+    player.dead = false;
+    player.downedUntil = undefined;
+    player.reviveProgress = 0;
     player.hp = 100;
     player.maxHp = 100;
     player.position = randomFreePosition(room.walls, room.map);
@@ -768,6 +789,9 @@ function startGame(room: Room) {
   for (const spectator of spectatorPlayers(room)) {
     spectator.ready = false;
     spectator.alive = false;
+    spectator.dead = false;
+    spectator.downedUntil = undefined;
+    spectator.reviveProgress = 0;
     spectator.hp = 0;
     spectator.score = 0;
     spectator.kills = 0;
@@ -802,10 +826,14 @@ function returnToLobby(room: Room) {
   room.processedItemRequests = new Map();
   room.processedCraftRequests = new Map();
   room.processedSupportRequests = new Map();
+  room.reviveProgress = new Map();
   promoteSpectators(room);
   for (const player of room.players.values()) {
     player.ready = false;
     player.alive = !player.spectator;
+    player.dead = false;
+    player.downedUntil = undefined;
+    player.reviveProgress = 0;
     player.hp = player.spectator ? 0 : player.maxHp;
     player.pendingUpgradeChoices = [];
     player.pendingUpgradeCount = 0;
@@ -819,6 +847,9 @@ function promoteSpectators(room: Room) {
     if (activePlayers(room).length >= room.settings.maxPlayers) return;
     spectator.spectator = false;
     spectator.alive = true;
+    spectator.dead = false;
+    spectator.downedUntil = undefined;
+    spectator.reviveProgress = 0;
     spectator.hp = 100;
     spectator.maxHp = 100;
   }
@@ -865,6 +896,7 @@ function tickRoom(room: Room) {
   updatePowerZones(room);
   updateSafeZones(room);
   updatePlayers(room, elapsed);
+  updateDownedPlayers(room, elapsed);
   updateRespawns(room, elapsed);
   updateProjectiles(room);
   updateZombies(room);
@@ -893,9 +925,8 @@ function updatePlayers(room: Room, elapsed: number) {
     const input = room.inputs.get(player.id);
     if (!input) continue;
 
-    const move = normalize(input.move);
-    const speed = player.alive ? playerMoveSpeed(player, elapsed) : 255;
-    player.position = movePlayerWithSlide(room, player.position, move, speed);
+    const move = player.alive ? normalize(input.move) : { x: 0, y: 0 };
+    if (player.alive) player.position = movePlayerWithSlide(room, player.position, move, playerMoveSpeed(player, elapsed));
     const aim = normalize(input.aim);
     if (length(aim) > 0) player.aim = aim;
 
@@ -916,6 +947,7 @@ function updatePlayers(room: Room, elapsed: number) {
     collectResources(room, player);
     updateEquipment(room, player, elapsed);
     updateSupportEquipment(room, player, elapsed);
+    if (input.revive) processReviveInput(room, player);
   }
 }
 
@@ -1658,14 +1690,66 @@ function damagePlayer(room: Room, target: Player, damage: number, attacker?: Pla
   recordRecentDamage(room, target.id, effectiveDamage);
   pushFeedback(room, 'hit', target.position, `-${Math.max(1, Math.round(effectiveDamage))}`, 0.12);
   if (target.hp > 0) return;
-  if (consumeEmergencyAed(room, target)) return;
+  downPlayer(room, target, attacker);
+}
+
+function downPlayer(room: Room, target: Player, attacker?: Player) {
+  if (isDowned(target) || target.dead) return;
+  const elapsed = elapsedSeconds(room);
   target.hp = 0;
   target.alive = false;
-  if (room.settings.gameMode === 'supplyDefense') {
-    room.playerRespawnAt.set(target.id, elapsed + SUPPLY_DEFENSE_RESPAWN_SEC);
-  }
+  target.dead = false;
+  target.downedUntil = elapsed + DOWNED_DURATION_SEC;
+  target.reviveProgress = 0;
+  room.reviveProgress.set(target.id, 0);
   if (attacker && attacker.id !== target.id) attacker.score += 40;
-  pushFeedback(room, 'playerDown', target.position, 'DOWN');
+  pushFeedback(room, 'playerDown', target.position, '기절');
+}
+
+function killDownedPlayer(room: Room, player: Player) {
+  if (consumeEmergencyAed(room, player)) return;
+  player.hp = 0;
+  player.alive = false;
+  player.dead = true;
+  player.downedUntil = undefined;
+  player.reviveProgress = 0;
+  room.reviveProgress.delete(player.id);
+  pushFeedback(room, 'playerDown', player.position, '사망');
+}
+
+function revivePlayer(room: Room, player: Player, hpRatio = 0.42) {
+  player.alive = true;
+  player.dead = false;
+  player.downedUntil = undefined;
+  player.reviveProgress = 0;
+  player.hp = Math.max(1, Math.round(player.maxHp * hpRatio));
+  room.reviveProgress.delete(player.id);
+  pushFeedback(room, 'heal', player.position, '구조');
+}
+
+function updateDownedPlayers(room: Room, elapsed: number) {
+  const activeDownedIds = new Set<string>();
+  for (const player of downedPlayers(room)) {
+    activeDownedIds.add(player.id);
+    const nextProgress = Math.max(0, (room.reviveProgress.get(player.id) ?? 0) - DT * 0.55);
+    room.reviveProgress.set(player.id, nextProgress);
+    player.reviveProgress = Math.min(1, nextProgress / REVIVE_DURATION_SEC);
+    if ((player.downedUntil ?? 0) <= elapsed) killDownedPlayer(room, player);
+  }
+  for (const id of [...room.reviveProgress.keys()]) {
+    if (!activeDownedIds.has(id)) room.reviveProgress.delete(id);
+  }
+}
+
+function processReviveInput(room: Room, rescuer: Player) {
+  const target = downedPlayers(room)
+    .filter((player) => player.id !== rescuer.id && distance(player.position, rescuer.position) <= REVIVE_RADIUS)
+    .sort((a, b) => distance(a.position, rescuer.position) - distance(b.position, rescuer.position))[0];
+  if (!target) return;
+  const nextProgress = (room.reviveProgress.get(target.id) ?? 0) + DT;
+  room.reviveProgress.set(target.id, nextProgress);
+  target.reviveProgress = Math.min(1, nextProgress / REVIVE_DURATION_SEC);
+  if (nextProgress >= REVIVE_DURATION_SEC) revivePlayer(room, target);
 }
 
 function updateRespawns(room: Room, elapsed: number) {
@@ -1717,6 +1801,11 @@ function consumeEmergencyAed(room: Room, player: Player) {
     player.activeSupportEquipment = undefined;
     player.supportExpiresAt = undefined;
   }
+  player.alive = true;
+  player.dead = false;
+  player.downedUntil = undefined;
+  player.reviveProgress = 0;
+  room.reviveProgress.delete(player.id);
   player.hp = Math.max(1, Math.round(player.maxHp * (0.32 + Math.max(0, level - 1) * 0.08)));
   pushFeedback(room, 'heal', player.position, 'AED');
   return true;
@@ -2576,6 +2665,15 @@ io.on('connection', (socket) => {
     const existing = rooms.get(roomId);
     const room = existing ?? createRoom(roomId, payload.settings, payload.roomTitle);
     if (!existing) rooms.set(roomId, room);
+    const restoredPlayer = restoreDisconnectedPlayer(room, socket.id, payload.sessionId);
+    if (restoredPlayer) {
+      socket.join(room.id);
+      socketRooms.set(socket.id, room.id);
+      socket.emit('joined', { roomId: room.id, playerId: socket.id });
+      broadcast(room);
+      broadcastRoomList();
+      return;
+    }
     const joiningAsSpectator = Boolean(existing && room.phase !== 'lobby' && room.phase !== 'ended');
     if (!joiningAsSpectator && activePlayers(room).length >= room.settings.maxPlayers) {
       socket.emit('errorMessage', '방 정원이 가득 찼습니다.');
@@ -2584,7 +2682,7 @@ io.on('connection', (socket) => {
 
     socket.join(room.id);
     socketRooms.set(socket.id, room.id);
-    const player = createPlayer(socket.id, payload.nickname, activePlayers(room).length === 0 && !joiningAsSpectator, payload.avatarId, joiningAsSpectator);
+    const player = createPlayer(socket.id, payload.nickname, activePlayers(room).length === 0 && !joiningAsSpectator, payload.avatarId, joiningAsSpectator, payload.sessionId);
     player.position = randomFreePosition(room.walls, room.map);
     room.players.set(socket.id, player);
     socket.emit('joined', { roomId: room.id, playerId: socket.id });
@@ -2656,18 +2754,66 @@ io.on('connection', (socket) => {
     room.inputs.set(socket.id, input);
   });
 
-  socket.on('leaveRoom', () => leave(socket.id));
-  socket.on('disconnect', () => leave(socket.id));
+  socket.on('leaveRoom', () => leave(socket.id, true));
+  socket.on('disconnect', () => leave(socket.id, false));
 });
+
+function restoreDisconnectedPlayer(room: Room, socketId: string, sessionId?: string) {
+  if (!sessionId) return undefined;
+  const entry = [...room.players.entries()].find(([, player]) => player.sessionId === sessionId);
+  if (!entry) return undefined;
+  const [previousSocketId, player] = entry;
+  if (previousSocketId === socketId) return player;
+  const timer = disconnectTimers.get(previousSocketId);
+  if (timer) {
+    clearTimeout(timer);
+    disconnectTimers.delete(previousSocketId);
+  }
+  room.players.delete(previousSocketId);
+  room.inputs.delete(previousSocketId);
+  room.processedItemRequests.delete(previousSocketId);
+  room.processedCraftRequests.delete(previousSocketId);
+  room.processedSupportRequests.delete(previousSocketId);
+  socketRooms.delete(previousSocketId);
+  updateOwnerReferences(room, previousSocketId, socketId);
+  killTimers.delete(comboKey(room, previousSocketId));
+  player.id = socketId;
+  room.players.set(socketId, player);
+  return player;
+}
+
+function updateOwnerReferences(room: Room, previousId: string, nextId: string) {
+  for (const zone of room.supportZones) if (zone.ownerId === previousId) zone.ownerId = nextId;
+  for (const zone of room.safeZones) if (zone.ownerId === previousId) zone.ownerId = nextId;
+  for (const facility of room.facilities) if (facility.ownerId === previousId) facility.ownerId = nextId;
+  for (const projectile of room.projectiles) if (projectile.ownerId === previousId) projectile.ownerId = nextId;
+}
 
 function getSocketRoom(socketId: string) {
   const roomId = socketRooms.get(socketId);
   return roomId ? rooms.get(roomId) : undefined;
 }
 
-function leave(socketId: string) {
+function leave(socketId: string, immediate: boolean) {
   const room = getSocketRoom(socketId);
   if (!room) return;
+  if (!immediate) {
+    const player = room.players.get(socketId);
+    if (player?.sessionId) {
+      const previousTimer = disconnectTimers.get(socketId);
+      if (previousTimer) clearTimeout(previousTimer);
+      disconnectTimers.set(socketId, setTimeout(() => {
+        disconnectTimers.delete(socketId);
+        leave(socketId, true);
+      }, 8000));
+      return;
+    }
+  }
+  const timer = disconnectTimers.get(socketId);
+  if (timer) {
+    clearTimeout(timer);
+    disconnectTimers.delete(socketId);
+  }
   killTimers.delete(comboKey(room, socketId));
   clearEquipmentTimers(room, socketId);
   clearFeedbackTimers(room, socketId);

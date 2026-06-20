@@ -60,18 +60,23 @@ export type PlayerInput = {
   craftSupport?: SupportEquipmentType;
   equipSupport?: SupportEquipmentType;
   activateSupport?: SupportEquipmentType;
+  revive?: boolean;
   craftRequestId?: number;
   supportRequestId?: number;
 };
 
 export type Player = {
   id: string;
+  sessionId?: string;
   nickname: string;
   avatarId: number;
   spectator?: boolean;
   ready: boolean;
   host: boolean;
   alive: boolean;
+  dead?: boolean;
+  downedUntil?: number;
+  reviveProgress?: number;
   hp: number;
   maxHp: number;
   position: Vec2;
@@ -238,6 +243,7 @@ export type JoinRoomPayload = {
   roomId?: string;
   roomTitle?: string;
   nickname: string;
+  sessionId?: string;
   avatarId?: number;
   settings?: RoomSettings;
 };
