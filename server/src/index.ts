@@ -92,7 +92,9 @@ type Room = {
 
 type DirectorState = {
   aliveCount: number;
+  totalPlayers: number;
   playerScale: number;
+  resourceScale: number;
   relief: number;
   earlyEase: number;
   lowestHpRatio: number;
@@ -170,7 +172,7 @@ const DIFFICULTY_TUNING: Record<GameDifficulty, DifficultyTuning> = {
   }
 };
 const RESOURCE_DROP_WEIGHTS: Array<{ type: ResourceType; weight: number }> = [
-  { type: 'partitionMaterial', weight: 22 },
+  { type: 'partitionMaterial', weight: 12 },
   { type: 'mixCoffee', weight: 12 },
   { type: 'keycapSet', weight: 13 },
   { type: 'paperBundle', weight: 15 },
@@ -181,11 +183,11 @@ const RESOURCE_DROP_WEIGHTS: Array<{ type: ResourceType; weight: number }> = [
 ];
 const RECOVERY_DROP_BONUS: Array<{ type: ResourceType; weight: number }> = [
   { type: 'mixCoffee', weight: 18 },
-  { type: 'partitionMaterial', weight: 10 }
+  { type: 'partitionMaterial', weight: 4 }
 ];
 const RELIEF_SUPPLY_DROP_BONUS: Array<{ type: ResourceType; weight: number }> = [
   { type: 'mixCoffee', weight: 16 },
-  { type: 'partitionMaterial', weight: 14 }
+  { type: 'partitionMaterial', weight: 5 }
 ];
 const DEFAULT_SETTINGS: RoomSettings = {
   maxPlayers: 6,
@@ -752,7 +754,7 @@ function startGame(room: Room) {
   room.craftingStations = craftingStationsForMode(room.settings.gameMode);
   room.safeZones = room.craftingStations.map((station) => createSafeZone(room, 'system', station.position, 0.9));
   if (room.settings.gameMode === 'supplyDefense') room.facilities.push(createSupplyCache(room));
-  room.resources = Array.from({ length: MAP_PRESETS[room.settings.gameMode].initialResources }, () => createResource(room));
+  room.resources = Array.from({ length: initialResourceCount(room) }, () => createResource(room));
   for (const player of activePlayers(room)) {
     killTimers.delete(comboKey(room, player.id));
     clearEquipmentTimers(room, player.id);
@@ -1940,10 +1942,10 @@ function spawnWorld(room: Room, elapsed: number) {
     }
     room.nextZombieSpawnAt = Math.max(0.8, (4.4 - room.wave * 0.13 + director.earlyEase * 0.75 + director.relief * 1.65) * spawnDelayScale * difficulty.spawnDelay);
   }
-  const resourceLimit = MAP_PRESETS[room.settings.gameMode].resourceLimit;
+  const resourceLimit = resourceLimitForRoom(room, director);
   if (room.nextResourceSpawnAt <= 0 && room.resources.length < resourceLimit) {
     room.resources.push(createResource(room, director));
-    room.nextResourceSpawnAt = 3.4 + Math.random() * 4.8 - director.relief * 1.5;
+    room.nextResourceSpawnAt = resourceSpawnDelay(director);
   }
   if (director.relief >= 0.62 && room.nextReliefSupplyAt <= 0 && room.resources.length < resourceLimit + 4) {
     room.resources.push(createResource(room, director, true));
@@ -1978,7 +1980,39 @@ function getDirectorState(room: Room, elapsed: number): DirectorState {
   const relief = clamp(lowHpPressure * 0.44 + recentDamage * 0.28 + deathPressure * 0.18 + crowdPressure * 0.1, 0, 0.9);
   const earlyEase = clamp((45 - elapsed) / 45, 0, 1);
   const playerScale = totalPlayers === 1 ? 0.88 : totalPlayers === 2 ? 0.94 : 1;
-  return { aliveCount, playerScale, relief, earlyEase, lowestHpRatio, recentDamage };
+  return { aliveCount, totalPlayers, playerScale, resourceScale: resourcePlayerScale(totalPlayers), relief, earlyEase, lowestHpRatio, recentDamage };
+}
+
+function resourcePlayerScale(playerCount: number) {
+  if (playerCount <= 1) return 0.62;
+  if (playerCount === 2) return 0.84;
+  if (playerCount === 3) return 1;
+  if (playerCount === 4) return 1.16;
+  if (playerCount === 5) return 1.3;
+  return 1.42;
+}
+
+function initialResourceCount(room: Room) {
+  const base = MAP_PRESETS[room.settings.gameMode].initialResources;
+  const scale = resourcePlayerScale(Math.max(1, activePlayers(room).length));
+  return Math.max(6, Math.round(base * scale));
+}
+
+function resourceLimitForRoom(room: Room, director?: DirectorState) {
+  const base = MAP_PRESETS[room.settings.gameMode].resourceLimit;
+  const scale = director?.resourceScale ?? resourcePlayerScale(Math.max(1, activePlayers(room).length));
+  return Math.max(10, Math.round(base * scale));
+}
+
+function resourceSpawnDelay(director: DirectorState) {
+  const playerFactor = director.totalPlayers <= 1
+    ? 1.4
+    : director.totalPlayers === 2
+      ? 1.16
+      : director.totalPlayers >= 5
+        ? 0.86
+        : 1;
+  return Math.max(1.35, (3.8 + Math.random() * 5.2 - director.relief * 1.15) * playerFactor);
 }
 
 function recentDamagePressure(room: Room) {
@@ -2075,16 +2109,47 @@ function createResource(room?: Room, director?: DirectorState, reliefSupply = fa
   const relief = director?.relief ?? 0;
   const lowestHpRatio = director?.lowestHpRatio ?? 1;
   const needRecovery = reliefSupply || relief >= 0.5 || lowestHpRatio <= 0.45;
-  const weights = [
+  const weights = resourceWeightsForRoom(room, [
     ...RESOURCE_DROP_WEIGHTS,
     ...(needRecovery ? RECOVERY_DROP_BONUS : []),
     ...(reliefSupply ? RELIEF_SUPPLY_DROP_BONUS : [])
-  ];
+  ]);
   return {
     id: makeId('resource'),
     type: weightedResourceType(weights),
     position: room && needRecovery ? resourceNearVulnerablePlayer(room) : randomFreePosition(room?.walls, room?.map)
   };
+}
+
+function resourceWeightsForRoom(room: Room | undefined, weights: Array<{ type: ResourceType; weight: number }>) {
+  if (!room) return weights;
+  const playerCount = Math.max(1, activePlayers(room).length);
+  const partitionStock = partitionMaterialStock(room);
+  return weights.map((item) => {
+    if (item.type !== 'partitionMaterial') return item;
+    const playerFactor = playerCount <= 1
+      ? 0.28
+      : playerCount === 2
+        ? 0.55
+        : playerCount === 3
+          ? 0.82
+          : 1;
+    const stockFactor = partitionStock >= playerCount * 4
+      ? 0.18
+      : partitionStock >= playerCount * 3
+        ? 0.35
+        : partitionStock >= playerCount * 2
+          ? 0.58
+          : 1;
+    return { ...item, weight: Math.max(1, item.weight * playerFactor * stockFactor) };
+  });
+}
+
+function partitionMaterialStock(room: Room) {
+  const inventoryStock = activePlayers(room).reduce((sum, player) => sum + player.inventory.partitionMaterial, 0);
+  const looseStock = room.resources.filter((resource) => resource.type === 'partitionMaterial').length;
+  const deployedStock = room.safeZones.filter((zone) => zone.ownerId !== 'system').length;
+  return inventoryStock + looseStock + deployedStock;
 }
 
 function weightedResourceType(weights: Array<{ type: ResourceType; weight: number }>) {
