@@ -68,6 +68,7 @@ export type Player = {
   id: string;
   nickname: string;
   avatarId: number;
+  spectator?: boolean;
   ready: boolean;
   host: boolean;
   alive: boolean;
@@ -165,6 +166,15 @@ export type SupportZone = {
   ttl: number;
 };
 
+export type SafeZone = {
+  id: string;
+  ownerId: string;
+  position: Vec2;
+  radius: number;
+  hp: number;
+  maxHp: number;
+};
+
 export type Wall = {
   x: number;
   y: number;
@@ -195,6 +205,7 @@ export type GameSnapshot = {
   facilities: Facility[];
   powerZones: PowerZone[];
   supportZones: SupportZone[];
+  safeZones: SafeZone[];
   projectiles: Projectile[];
   walls: Wall[];
   feedbackEvents: FeedbackEvent[];
@@ -236,6 +247,7 @@ export type RoomSummary = {
   roomTitle: string;
   phase: GamePhase;
   playerCount: number;
+  spectatorCount: number;
   maxPlayers: number;
   readyCount: number;
   gameMode: GameMode;

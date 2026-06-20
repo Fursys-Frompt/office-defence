@@ -26,17 +26,19 @@ import {
   WEAPON_COSTS,
   WEAPON_LABELS,
   craftMaterialKeys,
-  getPartitionPlacement,
   supportEquipmentKeys,
   usableResourceKeys,
-  weaponKeys,
-  type PartitionPlacement
+  weaponKeys
 } from '../../shared/src/gameRules';
 import { ConceptArtBoard } from './ConceptArtBoard';
 import avatarAtlasUrl from './assets/office-player-avatars.png';
 import craftingIconsUrl from './assets/office-crafting-icons.png';
 import emergencyAedIconUrl from './assets/emergency-aed-icon.png';
 import propAtlasUrl from './assets/office-props-atlas.png';
+import safeZoneCriticalUrl from './assets/safe-zone-critical.png';
+import safeZoneDamagedUrl from './assets/safe-zone-damaged.png';
+import safeZoneIntactUrl from './assets/safe-zone-intact.png';
+import safeZoneKitUrl from './assets/safe-zone-kit.png';
 import spriteSheetUrl from './assets/office-survival-sprites.png';
 import supplyCacheUrl from './assets/supply-cache.png';
 import waveMusicUrl from './assets/Wave.mp3';
@@ -52,6 +54,12 @@ type AudioCue = FeedbackEvent['type'] | 'shoot' | 'melee';
 type MusicTrack = 'combat' | 'break';
 type TouchControlSide = 'left' | 'right';
 type InstallItem = Extract<ResourceType, 'partitionMaterial'>;
+type CraftPanelTab = 'weapon' | 'support';
+type SafeZoneImages = {
+  intact: HTMLImageElement | null;
+  damaged: HTMLImageElement | null;
+  critical: HTMLImageElement | null;
+};
 type TutorialStep = 'room' | 'ready' | 'countdown' | 'move' | 'attack' | 'levelup' | 'collect' | 'craft' | 'items' | 'complete';
 type TutorialController = {
   step: TutorialStep;
@@ -88,6 +96,13 @@ const GAME_DIFFICULTY_LABELS: Record<GameDifficulty, string> = {
   easy: '이지',
   normal: '노말',
   hard: '하드'
+};
+const GAME_PHASE_LABELS: Record<GameSnapshot['phase'], string> = {
+  lobby: '대기중',
+  countdown: '시작 준비',
+  playing: '진행중',
+  paused: '일시정지',
+  ended: '결과'
 };
 const TUTORIAL_STEPS: TutorialStep[] = ['room', 'ready', 'countdown', 'move', 'attack', 'levelup', 'collect', 'craft', 'items', 'complete'];
 const TUTORIAL_STEP_LABELS: Record<TutorialStep, string> = {
@@ -151,6 +166,12 @@ const CRAFTING_ICON_SPRITES: Record<ResourceType | WeaponType | SupportEquipment
 const CRAFTING_ICON_IMAGES: Partial<Record<ResourceType | WeaponType | SupportEquipmentType, string>> = {
   emergencyAed: emergencyAedIconUrl
 };
+
+function resourceDisplayLabel(type: ResourceType) {
+  if (type === 'partitionMaterial') return '안전지대';
+  return RESOURCE_LABELS[type];
+}
+
 const UPGRADE_ICON_LABELS: Record<UpgradeType, string> = {
   range: 'RNG',
   damage: 'DMG',
@@ -451,7 +472,6 @@ function LobbyApp() {
   }, [snapshot?.phase, snapshot?.roomId, snapshot?.settings]);
 
   const me = snapshot?.players.find((player) => player.id === playerId);
-  const readyCount = snapshot?.players.filter((player) => player.ready).length ?? 0;
 
   const updateRoomSettings = (nextSettings: RoomSettings) => {
     setSettings(nextSettings);
@@ -525,7 +545,7 @@ function LobbyApp() {
           <div className="lobby-title">
             <p className="eyebrow">Mission Lobby</p>
             <h1>오피스 좀비 서바이벌</h1>
-            <p className="subtitle">대기중인 방에 입장하거나 새 방을 만들어 개인 생존 경쟁을 시작하세요.</p>
+            <p className="subtitle">방에 입장하거나 진행 중인 방을 관전하며 개인 생존 경쟁을 확인하세요.</p>
           </div>
 
           <div className="lobby-actions">
@@ -548,14 +568,15 @@ function LobbyApp() {
 
           <section className="room-list" aria-label="생성된 방 목록">
             <div className="room-list-header">
-              <strong>대기중인 방</strong>
+              <strong>전체 방</strong>
               <button type="button" onClick={refreshRooms}>새로고침</button>
             </div>
             {rooms.length === 0 ? (
               <p className="empty-room">입장 가능한 방이 없습니다.</p>
             ) : (
               rooms.map((room) => {
-                const full = room.playerCount >= room.maxPlayers;
+                const active = room.phase === 'lobby' || room.phase === 'ended';
+                const full = active && room.playerCount >= room.maxPlayers;
                 return (
                   <button
                     key={room.roomId}
@@ -568,7 +589,8 @@ function LobbyApp() {
                       <strong>{room.roomTitle}</strong>
                       <em>코드 {room.roomId} · 방장 {room.hostNickname}</em>
                     </span>
-                    <span>{room.playerCount}/{room.maxPlayers}</span>
+                    <span>{GAME_PHASE_LABELS[room.phase]}</span>
+                    <span>{room.playerCount}/{room.maxPlayers}{room.spectatorCount > 0 ? ` · 관전 ${room.spectatorCount}` : ''}</span>
                     <span>{GAME_DIFFICULTY_LABELS[room.difficulty]}</span>
                     <span>{GAME_MODE_LABELS[room.gameMode]}</span>
                     <span>{room.gameMode === 'endless' ? '무제한' : room.gameMode === 'killTarget' ? `${room.killTarget}킬` : `${Math.round(room.gameDurationSec / 60)}분`}</span>
@@ -611,6 +633,9 @@ function LobbyApp() {
   }
 
   if (snapshot.phase === 'lobby') {
+    const activePlayers = snapshot.players.filter((player) => !player.spectator);
+    const spectatorCount = snapshot.players.length - activePlayers.length;
+    const lobbyReadyCount = activePlayers.filter((player) => player.ready).length;
     return (
       <main className="shell lobby">
         <section className="panel">
@@ -620,8 +645,9 @@ function LobbyApp() {
               <h1>{snapshot.roomTitle}</h1>
               <div className="room-meta">
                 <span>코드 {roomId}</span>
-                <span>참가 {snapshot.players.length}/{snapshot.settings.maxPlayers}</span>
-                <span>준비 {readyCount}/{snapshot.players.length}</span>
+                <span>참가 {activePlayers.length}/{snapshot.settings.maxPlayers}</span>
+                {spectatorCount > 0 && <span>관전 {spectatorCount}</span>}
+                <span>준비 {lobbyReadyCount}/{activePlayers.length}</span>
                 <span>{GAME_DIFFICULTY_LABELS[snapshot.settings.difficulty]}</span>
                 <span>{GAME_MODE_LABELS[snapshot.settings.gameMode]}</span>
                 <span>맵 {snapshot.map.name}</span>
@@ -639,8 +665,8 @@ function LobbyApp() {
           <div className="player-list">
             {snapshot.players.map((player) => (
               <div key={player.id} className="player-row">
-                <span>{player.nickname}{player.host ? ' / 방장' : ''}</span>
-                <strong className={player.ready ? 'status ready' : 'status wait'}>{player.ready ? '준비 완료' : '대기중'}</strong>
+                <span>{player.nickname}{player.host ? ' / 방장' : ''}{player.spectator ? ' / 관전' : ''}</span>
+                <strong className={player.spectator ? 'status wait' : player.ready ? 'status ready' : 'status wait'}>{player.spectator ? '관전중' : player.ready ? '준비 완료' : '대기중'}</strong>
               </div>
             ))}
           </div>
@@ -737,9 +763,13 @@ function LobbyApp() {
               )}
             </div>
           )}
-          <button className="primary" onClick={() => socket.emit('setReady', !me.ready)}>
-            {me.ready ? '준비 취소' : '준비 완료'}
-          </button>
+          {me.spectator ? (
+            <p className="action-status">참가 슬롯이 비어야 다음 판에 참가할 수 있습니다.</p>
+          ) : (
+            <button className="primary" onClick={() => socket.emit('setReady', !me.ready)}>
+              {me.ready ? '준비 취소' : '준비 완료'}
+            </button>
+          )}
         </section>
       </main>
     );
@@ -748,7 +778,7 @@ function LobbyApp() {
   if (snapshot.phase === 'ended') {
     const ranking = snapshot.results.length > 0
       ? snapshot.results
-      : [...snapshot.players].sort((a, b) => b.score - a.score);
+      : [...snapshot.players].filter((player) => !player.spectator).sort((a, b) => b.score - a.score);
     const objective = snapshot.objective;
     const topPlayer = ranking[0];
     const outcome = resultOutcome(snapshot, topPlayer);
@@ -847,7 +877,7 @@ function LobbyApp() {
             <button type="button" onClick={shareResult}>공유하기</button>
             <button type="button" onClick={saveResultImage}>이미지 저장</button>
             <button type="button" onClick={copyInviteLink}>초대 링크</button>
-            {me.host && <button className="primary" onClick={() => socket.emit('restartGame')}>같은 방 다시하기</button>}
+            {me.host && <button className="primary" onClick={() => socket.emit('restartGame')}>방으로 돌아가기</button>}
             <button type="button" onClick={createNewRoom}>새 방 만들기</button>
             <button onClick={leaveRoom}>로비로 나가기</button>
           </div>
@@ -1145,6 +1175,7 @@ function makeTutorialSnapshot(
     facilities: [],
     powerZones: [],
     supportZones: [],
+    safeZones: [],
     projectiles: step === 'attack' ? [{
       id: 'tutorial-shot',
       ownerId: 'tutorial-player',
@@ -1269,11 +1300,11 @@ function GameGuideModal({ onClose, onStartTutorial }: { onClose: () => void; onS
           </article>
           <article>
             <strong>아이템</strong>
-            <p>제작대 근처에서 무기와 보조장비를 만들 수 있습니다. 믹스커피는 Q, 파티션은 E로 쓰고 일부 보조장비는 장착 중 자동 발동합니다.</p>
+            <p>제작대 근처에서 무기와 보조장비를 만들 수 있습니다. 믹스커피는 Q, 안전지대 설치/수리는 E로 쓰고 일부 보조장비는 장착 중 자동 발동합니다.</p>
           </article>
           <article>
             <strong>조작</strong>
-            <p>WASD로 이동합니다. 자동 조준이 가까운 대상을 공격합니다. Q는 구급, E는 파티션 전개입니다.</p>
+            <p>WASD로 이동합니다. 자동 조준이 가까운 대상을 공격합니다. Q는 구급, E는 안전지대 설치/수리입니다.</p>
           </article>
           <article>
             <strong>난이도</strong>
@@ -1448,6 +1479,17 @@ function ProfileModal({
   );
 }
 
+function getCameraTargetForPlayer(snapshot: GameSnapshot, player: GameSnapshot['players'][number]) {
+  if (!player.spectator) return player;
+  return [...snapshot.players]
+    .filter((candidate) => !candidate.spectator && candidate.alive)
+    .sort((a, b) => b.score - a.score || b.kills - a.kills)[0]
+    ?? [...snapshot.players]
+      .filter((candidate) => !candidate.spectator)
+      .sort((a, b) => b.score - a.score || b.survivalSec - a.survivalSec)[0]
+    ?? player;
+}
+
 function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; playerId: string; tutorial?: TutorialController }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const latestRender = useRef<{ snapshot: GameSnapshot; me: NonNullable<typeof snapshot.players[number]> } | null>(null);
@@ -1460,6 +1502,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const [bgmEnabled, setBgmEnabled] = useState(() => readBgmEnabled());
   const [upgradeChoicesOpen, setUpgradeChoicesOpen] = useState(true);
   const [craftingPanelOpen, setCraftingPanelOpen] = useState(false);
+  const [craftPanelTab, setCraftPanelTab] = useState<CraftPanelTab>('weapon');
   const [selectedInstallItem, setSelectedInstallItem] = useState<InstallItem | null>(null);
   const selectedInstallItemRef = useRef<InstallItem | null>(null);
   const queuedItem = useRef<{ type: ResourceType; requestId: number; until: number; aim?: Vec2 } | null>(null);
@@ -1486,12 +1529,19 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const craftingIcons = useGameImage(craftingIconsUrl);
   const avatarAtlas = useGameImage(avatarAtlasUrl);
   const supplyCacheImage = useGameImage(supplyCacheUrl);
+  const safeZoneImages: SafeZoneImages = {
+    intact: useGameImage(safeZoneIntactUrl),
+    damaged: useGameImage(safeZoneDamagedUrl),
+    critical: useGameImage(safeZoneCriticalUrl)
+  };
+  const safeZoneKitImage = useGameImage(safeZoneKitUrl);
   const me = snapshot.players.find((player) => player.id === playerId);
   latestInputState.current = { snapshot, me };
 
   const sendInput = useCallback(() => {
     const current = latestInputState.current;
     const currentMe = current.me;
+    if (currentMe?.spectator) return;
     const move = keyboardMove(pressed.current, joystick.current?.value);
     const normalizedMove = normalizeInputDirection(move);
     if (normalizedMove) lastInputDirection.current = normalizedMove;
@@ -1558,12 +1608,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const confirmPartitionInstall = useCallback(() => {
     const currentMe = latestInputState.current.me;
     if (!currentMe?.alive || currentMe.inventory.partitionMaterial <= 0) return;
-    queueItemUse('partitionMaterial', getPlacementAim(
-      currentMe,
-      pointer.current,
-      keyboardMove(pressed.current, joystick.current?.value),
-      lastInputDirection.current
-    ));
+    queueItemUse('partitionMaterial');
     setSelectedInstallItem(null);
   }, [queueItemUse]);
 
@@ -1662,20 +1707,10 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           canvas.height = targetHeight;
         }
         context.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const camera = smoothRenderPosition(`camera:${current.me.id}`, current.me.position, CAMERA_FOLLOW_AMOUNT);
-        const partitionPreview = selectedInstallItemRef.current === 'partitionMaterial' && current.me.inventory.partitionMaterial > 0
-          ? getPartitionPlacement(
-              current.me.position,
-              getPlacementAim(
-                current.me,
-                pointer.current,
-                keyboardMove(pressed.current, joystick.current?.value),
-                lastInputDirection.current
-              ),
-              current.me.upgrades.partition,
-              current.snapshot.walls,
-              current.snapshot.facilities
-            )
+        const cameraTarget = getCameraTargetForPlayer(current.snapshot, current.me);
+        const camera = smoothRenderPosition(`camera:${current.me.id}`, cameraTarget.position, CAMERA_FOLLOW_AMOUNT);
+        const safeZonePreview = !current.me.spectator && selectedInstallItemRef.current === 'partitionMaterial' && current.me.inventory.partitionMaterial > 0
+          ? current.me.position
           : undefined;
         drawGame(
           context,
@@ -1688,7 +1723,9 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           craftingIcons,
           avatarAtlas,
           supplyCacheImage,
-          partitionPreview,
+          safeZoneImages,
+          safeZoneKitImage,
+          safeZonePreview,
           visualEffects.current
         );
       }
@@ -1696,7 +1733,17 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
     };
     frame = requestAnimationFrame(render);
     return () => cancelAnimationFrame(frame);
-  }, [spriteSheet, propAtlas, craftingIcons, avatarAtlas, supplyCacheImage]);
+  }, [
+    spriteSheet,
+    propAtlas,
+    craftingIcons,
+    avatarAtlas,
+    supplyCacheImage,
+    safeZoneImages.intact,
+    safeZoneImages.damaged,
+    safeZoneImages.critical,
+    safeZoneKitImage
+  ]);
 
   useEffect(() => {
     const now = performance.now();
@@ -1722,12 +1769,13 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const hpPercent = Math.max(0, Math.min(100, (hp / maxHp) * 100));
   const dayNight = getDayNightLabel(snapshot);
   const threat = getThreatLabel(snapshot.nightIntensity, snapshot.wave);
-  const isSpectating = Boolean(me && !me.alive);
+  const isSpectator = Boolean(me?.spectator);
+  const isSpectating = Boolean(me && (me.spectator || !me.alive));
   const pendingChoices = me?.pendingUpgradeChoices ?? [];
   const pendingUpgradeCount = me?.pendingUpgradeCount ?? 0;
   const pendingChoiceKey = pendingChoices.map((choice) => choice.id).join('|');
   const showOpeningTip = snapshot.phase === 'playing' && snapshot.elapsedSec < OPENING_TIP_SECONDS && !isSpectating;
-  const nearestCraftingStation = me
+  const nearestCraftingStation = me && !isSpectator
     ? snapshot.craftingStations
         .map((station) => ({ station, distance: Math.hypot(station.position.x - me.position.x, station.position.y - me.position.y) }))
         .filter(({ station, distance }) => distance <= station.interactionRadius)
@@ -1749,6 +1797,14 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       canCraft: Boolean(me && craftLevel(me.supportEquipmentLevels, support, me.craftedSupportEquipment.includes(support)) < MAX_CRAFT_LEVEL && hasCost(me.inventory, SUPPORT_EQUIPMENT_COSTS[support]))
     }));
   }, [me?.craftedSupportEquipment, me?.equippedSupportEquipment, me?.inventory]);
+  const craftableWeaponCount = sortedCraftWeapons.filter((weapon) => {
+    const crafted = Boolean(me?.craftedWeapons.includes(weapon));
+    return Boolean(me && craftLevel(me.weaponLevels, weapon, crafted) < MAX_CRAFT_LEVEL && hasCost(me.inventory, WEAPON_COSTS[weapon]));
+  }).length;
+  const craftableSupportCount = sortedCraftSupport.filter((support) => {
+    const crafted = Boolean(me?.craftedSupportEquipment.includes(support));
+    return Boolean(me && craftLevel(me.supportEquipmentLevels, support, crafted) < MAX_CRAFT_LEVEL && hasCost(me.inventory, SUPPORT_EQUIPMENT_COSTS[support]));
+  }).length;
 
   useEffect(() => {
     if (pendingChoices.length > 0) setUpgradeChoicesOpen(true);
@@ -1871,12 +1927,12 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       <section className={`hud player-hud top-left ${hpPercent <= 30 && !isSpectating ? 'danger' : ''} ${isSpectating ? 'spectating' : ''}`}>
         <div className="player-summary">
           <strong>{me?.nickname}</strong>
-          <span>{isSpectating ? '관전 중' : `${me?.score ?? 0}점`}</span>
+          <span>{isSpectator ? '중간 입장 관전' : isSpectating ? '관전 중' : `${me?.score ?? 0}점`}</span>
         </div>
         <div className="hp-meter" aria-label={`체력 ${hp}/${maxHp}`}>
           <span style={{ width: `${hpPercent}%` }} />
         </div>
-        <b>{isSpectating ? '이동 관전 가능' : `체력 ${hp}/${maxHp}`}</b>
+        <b>{isSpectator ? '진행 중인 판은 관전만 가능합니다' : isSpectating ? '관전 중' : `체력 ${hp}/${maxHp}`}</b>
       </section>
       <section className="hud usable-item-hud">
         {usableItemKeys.map((resource) => {
@@ -1904,7 +1960,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
                 }}
               />
               <span>{resource === 'mixCoffee' ? 'Q' : selectedInstallItem === 'partitionMaterial' ? '확정' : 'E'}</span>
-              <strong>{RESOURCE_LABELS[resource]}</strong>
+              <strong>{resourceDisplayLabel(resource)}</strong>
               <b>{count}</b>
             </button>
           );
@@ -1914,21 +1970,57 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
         <div className="crafting-title">
           <strong>{canUseCraftingStation ? '제작대' : '제작대 밖'}</strong>
           <span>{me?.equippedWeapon ? `${WEAPON_LABELS[me.equippedWeapon]} · ${weaponBenefitText(me.equippedWeapon)}` : '기본 공격'} · {me?.equippedSupportEquipment ? SUPPORT_EQUIPMENT_LABELS[me.equippedSupportEquipment] : '보조 없음'}</span>
+          {showCraftingPanel && (
+            <button
+              type="button"
+              className="crafting-close-button"
+              onTouchStart={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setCraftingPanelOpen(false);
+              }}
+              onClick={() => setCraftingPanelOpen(false)}
+            >
+              닫기
+            </button>
+          )}
         </div>
-        <div className={showCraftingPanel ? 'material-row' : 'material-row compact'}>
-          {craftMaterialKeys.map((resource) => (
-            <span key={resource} className={(me?.inventory[resource] ?? 0) > 0 ? 'has' : ''}>
-              <i
-                style={{
-                  backgroundImage: `url(${craftingIconsUrl})`,
-                  backgroundPosition: spriteBackgroundPosition(CRAFTING_ICON_SPRITES[resource].col, CRAFTING_ICON_SPRITES[resource].row, 4, 4)
-                }}
-              />
-              <b>{me?.inventory[resource] ?? 0}</b>
-              <em>{RESOURCE_LABELS[resource]}</em>
-            </span>
-          ))}
-        </div>
+        {showCraftingPanel && (
+          <>
+            <div className="crafting-tabs" role="tablist" aria-label="제작 종류">
+              <button
+                type="button"
+                className={craftPanelTab === 'weapon' ? 'active' : ''}
+                aria-selected={craftPanelTab === 'weapon'}
+                onClick={() => setCraftPanelTab('weapon')}
+              >
+                무기 <b>{craftableWeaponCount}</b>
+              </button>
+              <button
+                type="button"
+                className={craftPanelTab === 'support' ? 'active' : ''}
+                aria-selected={craftPanelTab === 'support'}
+                onClick={() => setCraftPanelTab('support')}
+              >
+                보조 <b>{craftableSupportCount}</b>
+              </button>
+            </div>
+            <div className="material-row">
+              {craftMaterialKeys.map((resource) => (
+                <span key={resource} className={(me?.inventory[resource] ?? 0) > 0 ? 'has' : ''}>
+                  <i
+                    style={{
+                      backgroundImage: `url(${craftingIconsUrl})`,
+                      backgroundPosition: spriteBackgroundPosition(CRAFTING_ICON_SPRITES[resource].col, CRAFTING_ICON_SPRITES[resource].row, 4, 4)
+                    }}
+                  />
+                  <b>{me?.inventory[resource] ?? 0}</b>
+                  <em>{resourceDisplayLabel(resource)}</em>
+                </span>
+              ))}
+            </div>
+          </>
+        )}
         {canUseCraftingStation && !showCraftingPanel && (
           <button
             type="button"
@@ -1940,13 +2032,13 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
             }}
             onClick={() => setCraftingPanelOpen(true)}
           >
-            <strong>제작 열기</strong>
-            <span>근처 제작대</span>
+            <strong>제작</strong>
+            {(craftableWeaponCount + craftableSupportCount) > 0 && <b>{craftableWeaponCount + craftableSupportCount}</b>}
           </button>
         )}
         {showCraftingPanel && (
           <div className="crafting-list">
-            {sortedCraftWeapons.map((weapon) => {
+            {craftPanelTab === 'weapon' && sortedCraftWeapons.map((weapon) => {
               const crafted = Boolean(me?.craftedWeapons.includes(weapon));
               const equipped = me?.equippedWeapon === weapon;
               const level = craftLevel(me?.weaponLevels, weapon, crafted);
@@ -1972,7 +2064,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
                 </button>
               );
             })}
-            {sortedCraftSupport.map((support) => {
+            {craftPanelTab === 'support' && sortedCraftSupport.map((support) => {
               const crafted = Boolean(me?.craftedSupportEquipment.includes(support));
               const equipped = me?.equippedSupportEquipment === support;
               const level = craftLevel(me?.supportEquipmentLevels, support, crafted);
@@ -2264,7 +2356,7 @@ function TutorialOverlay({
         {step === 'items' && (
           <>
             <strong>9. 아이템과 낮밤 사이클</strong>
-            <p>전투 중 Q는 믹스커피 회복, E는 파티션 전개입니다. 낮에 재료를 모으고 밤 공세 전에 장비를 강화하세요.</p>
+            <p>전투 중 Q는 믹스커피 회복, E는 안전지대 설치/수리입니다. 낮에 재료를 모으고 밤 공세 전에 장비를 강화하세요.</p>
             <p>보조장비는 종류마다 다릅니다. MZ의 키캡은 R로 쓰고, 로봇청소기와 연차 신청서 방패, 비상 AED는 장착 중 자동으로 작동합니다.</p>
             <div className="tutorial-step-actions">
               <button type="button" className="primary" onClick={onNext}>결과 화면 보기</button>
@@ -2720,7 +2812,9 @@ function drawGame(
   craftingIcons: HTMLImageElement | null,
   avatarAtlas: HTMLImageElement | null,
   supplyCacheImage: HTMLImageElement | null,
-  partitionPreview: PartitionPlacement | undefined,
+  safeZoneImages: SafeZoneImages,
+  safeZoneKitImage: HTMLImageElement | null,
+  safeZonePreview: Vec2 | undefined,
   effects: VisualEffect[]
 ) {
   context.clearRect(0, 0, width, height);
@@ -2736,8 +2830,11 @@ function drawGame(
   for (const warning of snapshot.spawnWarnings) {
     drawSpawnWarning(context, warning);
   }
+  for (const zone of snapshot.safeZones) {
+    drawSafeZone(context, zone, safeZoneImages);
+  }
   for (const resource of snapshot.resources) {
-    drawWorldResource(context, propAtlas, craftingIcons, resource.type, resource.position);
+    drawWorldResource(context, propAtlas, craftingIcons, safeZoneKitImage, resource.type, resource.position);
   }
   for (const station of snapshot.craftingStations) {
     drawCraftingStation(context, propAtlas, station);
@@ -2756,7 +2853,7 @@ function drawGame(
     const maxFacilityHp = facility.type === 'supplyCache' ? 900 : 220;
     context.fillRect(facility.position.x - hpBarWidth / 2, hpBarTop, Math.max(0, Math.min(1, facility.hp / maxFacilityHp)) * hpBarWidth, 4);
   }
-  if (partitionPreview) drawPartitionPreview(context, partitionPreview);
+  if (safeZonePreview) drawSafeZonePreview(context, safeZonePreview, safeZoneImages.intact);
   for (const projectile of snapshot.projectiles) {
     drawProjectile(context, projectile);
   }
@@ -3145,6 +3242,7 @@ function drawWorldResource(
   context: CanvasRenderingContext2D,
   propAtlas: HTMLImageElement | null,
   craftingIcons: HTMLImageElement | null,
+  safeZoneKitImage: HTMLImageElement | null,
   type: ResourceType,
   position: Vec2
 ) {
@@ -3165,7 +3263,9 @@ function drawWorldResource(
   context.setLineDash([]);
   context.globalAlpha = 1;
 
-  if (craftingIcons && CRAFTING_ICON_SPRITES[type]) {
+  if (type === 'partitionMaterial' && safeZoneKitImage) {
+    drawImageCentered(context, safeZoneKitImage, { x: position.x, y: position.y + bob }, size * 1.1);
+  } else if (craftingIcons && CRAFTING_ICON_SPRITES[type]) {
     const icon = CRAFTING_ICON_SPRITES[type];
     drawAtlasSprite(context, craftingIcons, icon.col, icon.row, 4, 4, { x: position.x, y: position.y + bob }, size * 1.28);
   } else if (propAtlas && isAtlasResource(type)) {
@@ -3243,6 +3343,50 @@ function drawSupportZone(context: CanvasRenderingContext2D, zone: GameSnapshot['
   context.font = '900 13px sans-serif';
   context.textAlign = 'center';
   context.fillText('ASMR 아님', zone.position.x, zone.position.y - 10);
+  context.restore();
+}
+
+function drawSafeZone(context: CanvasRenderingContext2D, zone: GameSnapshot['safeZones'][number], images: SafeZoneImages) {
+  const hpRatio = Math.max(0, Math.min(1, zone.hp / zone.maxHp));
+  const danger = hpRatio < 0.35;
+  const image = danger ? images.critical : hpRatio < 0.68 ? images.damaged : images.intact;
+
+  context.save();
+  if (image) {
+    context.globalAlpha = 0.96;
+    drawImageCentered(context, image, zone.position, zone.radius * 1.55);
+  } else {
+    context.globalAlpha = 0.28;
+    context.fillStyle = danger ? '#ffb86b' : '#62d6c4';
+    context.beginPath();
+    context.arc(zone.position.x, zone.position.y, zone.radius, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  context.globalAlpha = 0.95;
+  context.strokeStyle = danger ? '#ff6f61' : '#1f9f8e';
+  context.lineWidth = 4;
+  context.beginPath();
+  context.arc(zone.position.x, zone.position.y, zone.radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * hpRatio);
+  context.stroke();
+
+  context.strokeStyle = 'rgba(255,255,255,0.86)';
+  context.lineWidth = 2;
+  context.setLineDash([10, 8]);
+  context.beginPath();
+  context.arc(zone.position.x, zone.position.y, zone.radius * 0.78, 0, Math.PI * 2);
+  context.stroke();
+  context.setLineDash([]);
+
+  context.font = '900 13px sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.strokeStyle = 'rgba(23,33,29,0.76)';
+  context.lineWidth = 3;
+  context.fillStyle = danger ? '#fff4a3' : '#ffffff';
+  const label = danger ? '수리 필요' : '안전지대';
+  context.strokeText(label, zone.position.x, zone.position.y);
+  context.fillText(label, zone.position.x, zone.position.y);
   context.restore();
 }
 
@@ -3777,34 +3921,32 @@ function drawSupplyCache(context: CanvasRenderingContext2D, position: Vec2, hp: 
   context.restore();
 }
 
-function drawPartitionPreview(context: CanvasRenderingContext2D, placement: PartitionPlacement) {
-  const { position, width, height, valid } = placement;
-  const left = position.x - width / 2;
-  const top = position.y - height / 2;
-  const color = valid ? '#5ac8c8' : '#ff6f61';
-  const fill = valid ? 'rgba(90, 200, 200, 0.24)' : 'rgba(255, 111, 97, 0.18)';
-
+function drawSafeZonePreview(context: CanvasRenderingContext2D, position: Vec2, image: HTMLImageElement | null) {
   context.save();
-  context.fillStyle = fill;
-  context.strokeStyle = color;
+  if (image) {
+    context.globalAlpha = 0.5;
+    drawImageCentered(context, image, position, 230);
+    context.globalAlpha = 1;
+  }
+  context.fillStyle = 'rgba(98, 214, 196, 0.12)';
+  context.strokeStyle = '#5ac8c8';
   context.lineWidth = 3;
-  context.setLineDash(valid ? [10, 6] : [5, 5]);
+  context.setLineDash([10, 6]);
   context.beginPath();
-  context.roundRect(left, top, width, height, 6);
+  context.arc(position.x, position.y, 150, 0, Math.PI * 2);
   context.fill();
   context.stroke();
   context.setLineDash([]);
 
-  context.fillStyle = color;
+  context.fillStyle = '#5ac8c8';
   context.globalAlpha = 0.9;
   context.font = '800 12px sans-serif';
   context.textAlign = 'center';
   context.textBaseline = 'middle';
   context.strokeStyle = 'rgba(23,33,29,0.72)';
   context.lineWidth = 3;
-  const label = valid ? '설치 가능' : '공간 부족';
-  context.strokeText(label, position.x, top - 12);
-  context.fillText(label, position.x, top - 12);
+  context.strokeText('안전지대 설치', position.x, position.y - 162);
+  context.fillText('안전지대 설치', position.x, position.y - 162);
   context.restore();
 }
 
@@ -4043,6 +4185,12 @@ function drawAtlasSprite(
     size,
     size
   );
+}
+
+function drawImageCentered(context: CanvasRenderingContext2D, image: HTMLImageElement, position: Vec2, width: number) {
+  const aspect = image.naturalHeight > 0 ? image.naturalWidth / image.naturalHeight : 1;
+  const height = width / aspect;
+  context.drawImage(image, position.x - width / 2, position.y - height / 2, width, height);
 }
 
 function drawMotionAtlasSprite(

@@ -1620,6 +1620,17 @@ canvas {
   text-align: right;
 }
 
+.crafting-close-button {
+  min-height: 30px;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: rgba(23, 59, 63, 0.1);
+  color: #173b3f;
+  font-size: 12px;
+  font-weight: 900;
+  touch-action: manipulation;
+}
+
 .crafting-hint {
   margin: 0;
   color: rgba(23, 33, 29, 0.68);
@@ -1725,12 +1736,13 @@ canvas {
 }
 
 .crafting-open-button {
-  min-height: 38px;
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
+  min-height: 36px;
+  display: inline-flex;
+  justify-content: center;
+  gap: 6px;
   align-items: center;
-  padding: 8px 10px;
+  justify-self: start;
+  padding: 0 12px;
   border-radius: 8px;
   background: #173b3f;
   border-color: rgba(255, 244, 163, 0.62);
@@ -1743,10 +1755,61 @@ canvas {
   font-size: 13px;
 }
 
-.crafting-open-button span {
+.crafting-open-button span,
+.crafting-open-button b {
   color: #fff4a3;
   font-size: 11px;
   font-weight: 900;
+}
+
+.crafting-open-button b {
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #fff4a3;
+  color: #173b3f;
+}
+
+.crafting-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 3px;
+  border-radius: 8px;
+  background: rgba(23, 59, 63, 0.08);
+}
+
+.crafting-tabs button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(23, 33, 29, 0.72);
+  font-size: 13px;
+  font-weight: 900;
+  touch-action: manipulation;
+}
+
+.crafting-tabs button.active {
+  background: #173b3f;
+  color: #f7fbfa;
+}
+
+.crafting-tabs b {
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 244, 163, 0.2);
+  color: inherit;
+  font-size: 11px;
 }
 
 .crafting-list {
@@ -2384,6 +2447,20 @@ canvas {
     max-width: none;
   }
 
+  .crafting-hud.nearby {
+    left: 104px;
+    right: 8px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    width: auto;
+    max-width: none;
+    justify-items: start;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
   .game.joystick-right .crafting-hud {
     left: 8px;
     right: 96px;
@@ -2394,6 +2471,13 @@ canvas {
     left: 8px;
     right: 96px;
     width: auto;
+  }
+
+  .game.joystick-right .crafting-hud.nearby {
+    left: 8px;
+    right: 104px;
+    width: auto;
+    justify-items: end;
   }
 
   .material-row {
@@ -2430,6 +2514,93 @@ canvas {
   .crafting-list button i {
     width: 26px;
     height: 26px;
+  }
+
+  .crafting-hud.open,
+  .game.joystick-right .crafting-hud.open {
+    left: 8px;
+    right: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    z-index: 12;
+    width: auto;
+    max-width: none;
+    max-height: min(60dvh, 456px);
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px;
+    background: rgba(247, 251, 250, 0.94);
+    box-shadow: 0 -14px 44px rgba(23, 59, 63, 0.24);
+  }
+
+  .crafting-hud.open .crafting-title {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .crafting-hud.open .crafting-title span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
+  }
+
+  .crafting-hud.open .material-row {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 3px;
+  }
+
+  .crafting-hud.open .material-row span {
+    min-height: 30px;
+    grid-template-columns: 18px 1fr;
+    padding: 3px;
+  }
+
+  .crafting-hud.open .material-row i {
+    width: 18px;
+    height: 18px;
+  }
+
+  .crafting-hud.open .material-row b {
+    font-size: 12px;
+  }
+
+  .crafting-hud.open .crafting-list {
+    max-height: none;
+    min-height: 0;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 2px;
+  }
+
+  .crafting-hud.open .crafting-list button {
+    min-height: 54px;
+    grid-template-columns: 38px minmax(0, 1fr);
+    gap: 3px 8px;
+    padding: 8px 10px;
+  }
+
+  .crafting-hud.open .crafting-list button i {
+    width: 38px;
+    height: 38px;
+  }
+
+  .crafting-hud.open .crafting-list button strong,
+  .crafting-hud.open .crafting-list button span {
+    white-space: normal;
+  }
+
+  .crafting-hud.open .crafting-list button strong {
+    font-size: 13px;
+  }
+
+  .crafting-hud.nearby .crafting-open-button {
+    min-height: 38px;
+    padding: 0 12px;
+    box-shadow: 0 10px 26px rgba(23, 59, 63, 0.2);
   }
 
   .support-use-button {
