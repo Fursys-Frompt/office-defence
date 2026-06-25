@@ -1,5 +1,6 @@
 ﻿import express from 'express';
 import { createServer } from 'http';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
@@ -20,6 +21,7 @@ import type {
   ResourceInventory,
   ResourceNode,
   ResourceType,
+  RankingEntry,
   RoomSummary,
   RoomSettings,
   ServerToClientEvents,
@@ -32,6 +34,7 @@ import type {
   WavePhase,
   Wall,
   WeaponType,
+  WeeklyRankings,
   Zombie,
   ZombieType
 } from '../../shared/src/types.js';
@@ -196,6 +199,36 @@ const DEFAULT_SETTINGS: RoomSettings = {
   gameDurationSec: 180,
   killTarget: 100,
   pvpEnabled: false
+};
+const SUPABASE_RANKINGS_TABLE = 'office_rankings';
+const RANKING_MODES: GameMode[] = ['timedSurvival', 'endless', 'killTarget', 'supplyDefense'];
+const RANKING_LIMIT_PER_MODE = 10;
+
+type SupabaseCredentials = {
+  url: string;
+  serviceRoleKey: string;
+};
+
+type RankingRow = {
+  id: string;
+  ranking_type: 'personal' | 'team';
+  game_mode: GameMode;
+  week_start: string;
+  display_name: string;
+  score: number;
+  kills: number;
+  survival_sec: number;
+  room_id: string;
+  room_title: string;
+  player_count: number;
+  difficulty: GameDifficulty;
+  recorded_at: string;
+};
+
+type RankingInsertRow = Omit<RankingRow, 'id' | 'recorded_at'> & {
+  player_session_id?: string | null;
+  game_duration_sec: number;
+  pvp_enabled: boolean;
 };
 
 type MapPreset = {
@@ -812,6 +845,9 @@ function endGame(room: Room) {
   room.results = activePlayers(room)
     .map((player) => ({ ...player, inventory: { ...player.inventory }, position: { ...player.position }, aim: { ...player.aim } }))
     .sort((a, b) => compareResults(room, a, b));
+  storeWeeklyRankings(room).catch((error) => {
+    console.warn('Failed to store weekly rankings:', error);
+  });
 }
 
 function returnToLobby(room: Room) {
@@ -2703,8 +2739,181 @@ function circleRect(point: Vec2, radius: number, rect: Wall) {
   return distance(point, { x: closestX, y: closestY }) < radius;
 }
 
+function supabaseCredentials(): SupabaseCredentials | undefined {
+  const envUrl = process.env.SUPABASE_URL?.trim();
+  const envKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  if (envUrl && envKey) return { url: envUrl.replace(/\/$/, ''), serviceRoleKey: envKey };
+
+  const localSecretFile = path.resolve(process.cwd(), 'Asset', 'Supabase.txt');
+  if (!existsSync(localSecretFile)) return undefined;
+  const text = readFileSync(localSecretFile, 'utf8');
+  const url = text.match(/project URL\s*:\s*(\S+)/i)?.[1]?.trim();
+  const serviceRoleKey = text.match(/service_role\s*:\s*(\S+)/i)?.[1]?.trim();
+  if (!url || !serviceRoleKey) return undefined;
+  return { url: url.replace(/\/$/, ''), serviceRoleKey };
+}
+
+function supabaseHeaders(credentials: SupabaseCredentials) {
+  return {
+    apikey: credentials.serviceRoleKey,
+    authorization: `Bearer ${credentials.serviceRoleKey}`,
+    'content-type': 'application/json'
+  };
+}
+
+async function supabaseRequest<T>(pathName: string, init: RequestInit = {}) {
+  const credentials = supabaseCredentials();
+  if (!credentials) return undefined;
+  const response = await fetch(`${credentials.url}/rest/v1/${pathName}`, {
+    ...init,
+    headers: {
+      ...supabaseHeaders(credentials),
+      prefer: 'return=minimal',
+      ...(init.headers ?? {})
+    }
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Supabase ${response.status}: ${message}`);
+  }
+  if (response.status === 204) return undefined;
+  return await response.json() as T;
+}
+
+function kstWeekStart(date = new Date()) {
+  const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  const day = kst.getUTCDay();
+  const daysSinceMonday = (day + 6) % 7;
+  kst.setUTCDate(kst.getUTCDate() - daysSinceMonday);
+  return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}-${String(kst.getUTCDate()).padStart(2, '0')}`;
+}
+
+function emptyWeeklyRankings(weekStart = kstWeekStart()): WeeklyRankings {
+  return {
+    weekStart,
+    personal: {
+      timedSurvival: [],
+      endless: [],
+      killTarget: [],
+      supplyDefense: []
+    },
+    team: {
+      timedSurvival: [],
+      endless: [],
+      killTarget: [],
+      supplyDefense: []
+    }
+  };
+}
+
+async function loadWeeklyRankings(): Promise<WeeklyRankings> {
+  const weekStart = kstWeekStart();
+  const rankings = emptyWeeklyRankings(weekStart);
+  const query = new URLSearchParams({
+    select: 'id,ranking_type,game_mode,week_start,display_name,score,kills,survival_sec,room_id,room_title,player_count,difficulty,recorded_at',
+    week_start: `eq.${weekStart}`,
+    order: 'score.desc,kills.desc,survival_sec.desc',
+    limit: '240'
+  });
+  const rows = await supabaseRequest<RankingRow[]>(`${SUPABASE_RANKINGS_TABLE}?${query.toString()}`, {
+    headers: { prefer: 'return=representation' }
+  }) ?? [];
+
+  for (const mode of RANKING_MODES) {
+    const personal = rows
+      .filter((row) => row.ranking_type === 'personal' && row.game_mode === mode)
+      .sort(compareRankingRows)
+      .slice(0, RANKING_LIMIT_PER_MODE);
+    const team = rows
+      .filter((row) => row.ranking_type === 'team' && row.game_mode === mode)
+      .sort(compareRankingRows)
+      .slice(0, RANKING_LIMIT_PER_MODE);
+    rankings.personal[mode] = personal.map((row, index) => rankingEntry(row, index));
+    rankings.team[mode] = team.map((row, index) => rankingEntry(row, index));
+  }
+  return rankings;
+}
+
+function compareRankingRows(a: RankingRow, b: RankingRow) {
+  if (a.score !== b.score) return b.score - a.score;
+  if (a.kills !== b.kills) return b.kills - a.kills;
+  if (a.survival_sec !== b.survival_sec) return b.survival_sec - a.survival_sec;
+  return a.recorded_at.localeCompare(b.recorded_at);
+}
+
+function rankingEntry(row: RankingRow, index: number): RankingEntry {
+  return {
+    id: row.id,
+    rankingType: row.ranking_type,
+    gameMode: row.game_mode,
+    rank: index + 1,
+    displayName: row.display_name,
+    score: row.score,
+    kills: row.kills,
+    survivalSec: row.survival_sec,
+    roomId: row.room_id,
+    roomTitle: row.room_title,
+    playerCount: row.player_count,
+    difficulty: row.difficulty,
+    recordedAt: row.recorded_at
+  };
+}
+
+async function storeWeeklyRankings(room: Room) {
+  if (room.results.length === 0) return;
+  const weekStart = kstWeekStart();
+  const activeResults = room.results.filter((player) => !player.spectator);
+  const rows: RankingInsertRow[] = activeResults.map((player) => ({
+    ranking_type: 'personal',
+    game_mode: room.settings.gameMode,
+    week_start: weekStart,
+    display_name: player.nickname,
+    player_session_id: player.sessionId ?? null,
+    score: Math.max(0, Math.round(player.score)),
+    kills: Math.max(0, Math.round(player.kills)),
+    survival_sec: Math.max(0, Math.round(player.survivalSec)),
+    room_id: room.id,
+    room_title: room.title,
+    player_count: activeResults.length,
+    difficulty: room.settings.difficulty,
+    game_duration_sec: room.settings.gameDurationSec,
+    pvp_enabled: room.settings.pvpEnabled
+  }));
+
+  rows.push({
+    ranking_type: 'team',
+    game_mode: room.settings.gameMode,
+    week_start: weekStart,
+    display_name: room.title,
+    player_session_id: null,
+    score: activeResults.reduce((total, player) => total + Math.max(0, Math.round(player.score)), 0),
+    kills: activeResults.reduce((total, player) => total + Math.max(0, Math.round(player.kills)), 0),
+    survival_sec: Math.max(0, ...activeResults.map((player) => Math.round(player.survivalSec))),
+    room_id: room.id,
+    room_title: room.title,
+    player_count: activeResults.length,
+    difficulty: room.settings.difficulty,
+    game_duration_sec: room.settings.gameDurationSec,
+    pvp_enabled: room.settings.pvpEnabled
+  });
+
+  await supabaseRequest(`${SUPABASE_RANKINGS_TABLE}`, {
+    method: 'POST',
+    body: JSON.stringify(rows)
+  });
+}
+
 app.get('/api/rooms', (_req, res) => {
   res.json(roomSummaries());
+});
+
+app.get('/api/rankings/weekly', async (_req, res) => {
+  try {
+    res.json(await loadWeeklyRankings());
+  } catch (error) {
+    console.warn('Failed to load weekly rankings:', error);
+    res.json(emptyWeeklyRankings());
+  }
 });
 
 app.get('/api/health', (_req, res) => {

@@ -47,6 +47,30 @@ export type RoomSettings = {
   pvpEnabled: boolean;
 };
 
+export type RankingType = 'personal' | 'team';
+
+export type RankingEntry = {
+  id: string;
+  rankingType: RankingType;
+  gameMode: GameMode;
+  rank: number;
+  displayName: string;
+  score: number;
+  kills: number;
+  survivalSec: number;
+  roomId: string;
+  roomTitle: string;
+  playerCount: number;
+  difficulty: GameDifficulty;
+  recordedAt: string;
+};
+
+export type WeeklyRankings = {
+  weekStart: string;
+  personal: Record<GameMode, RankingEntry[]>;
+  team: Record<GameMode, RankingEntry[]>;
+};
+
 export type PlayerInput = {
   move: Vec2;
   aim: Vec2;

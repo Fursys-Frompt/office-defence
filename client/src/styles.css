@@ -167,6 +167,128 @@ h1 {
   gap: 10px;
 }
 
+.leaderboard-board {
+  display: grid;
+  gap: 12px;
+  padding: 14px 0;
+  border-top: 1px solid rgba(23, 59, 63, 0.1);
+  border-bottom: 1px solid rgba(23, 59, 63, 0.1);
+}
+
+.leaderboard-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.leaderboard-header strong,
+.leaderboard-header span {
+  display: block;
+}
+
+.leaderboard-header strong {
+  font-size: 15px;
+}
+
+.leaderboard-header span {
+  margin-top: 2px;
+  color: rgba(23, 33, 29, 0.58);
+  font-size: 12px;
+}
+
+.leaderboard-header button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.leaderboard-status,
+.leaderboard-empty {
+  margin: 0;
+  color: rgba(23, 33, 29, 0.58);
+  font-size: 12px;
+}
+
+.leaderboard-status {
+  color: #c63f3f;
+}
+
+.leaderboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.leaderboard-mode {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.leaderboard-mode h2 {
+  margin: 0;
+  color: #173b3f;
+  font-size: 14px;
+}
+
+.leaderboard-column {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.leaderboard-column-title {
+  color: rgba(23, 33, 29, 0.68);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.leaderboard-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: rgba(23, 59, 63, 0.06);
+}
+
+.leaderboard-row strong {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #173b3f;
+  color: #f7fbfa;
+  font-size: 12px;
+}
+
+.leaderboard-row span,
+.leaderboard-row b,
+.leaderboard-row em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leaderboard-row span {
+  font-weight: 800;
+}
+
+.leaderboard-row b {
+  font-size: 12px;
+}
+
+.leaderboard-row em {
+  grid-column: 2 / 4;
+  color: rgba(23, 33, 29, 0.58);
+  font-size: 11px;
+  font-style: normal;
+}
+
 .room-list-header strong {
   font-size: 15px;
 }
@@ -2250,6 +2372,17 @@ canvas {
 
   h1 {
     font-size: 36px;
+  }
+
+  .lobby-actions,
+  .direct-room,
+  .leaderboard-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .leaderboard-grid {
+    grid-template-columns: 1fr;
   }
 
   .avatar-preview {

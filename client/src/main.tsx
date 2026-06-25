@@ -17,7 +17,8 @@ import type {
   UpgradeOption,
   UpgradeType,
   Vec2,
-  WeaponType
+  WeaponType,
+  WeeklyRankings
 } from '../../shared/src/types';
 import {
   RESOURCE_LABELS,
@@ -87,6 +88,7 @@ const GAME_MODE_LABELS: Record<GameMode, string> = {
   killTarget: '좀비 처치',
   supplyDefense: '물자 지키기'
 };
+const RANKING_MODES: GameMode[] = ['timedSurvival', 'endless', 'killTarget', 'supplyDefense'];
 const GAME_MODE_MAP_LABELS: Record<GameMode, string> = {
   timedSurvival: '분할 사무실',
   endless: '순환 복도',
@@ -106,6 +108,23 @@ const GAME_PHASE_LABELS: Record<GameSnapshot['phase'], string> = {
   paused: '일시정지',
   ended: '결과'
 };
+function emptyWeeklyRankings(): WeeklyRankings {
+  return {
+    weekStart: '',
+    personal: {
+      timedSurvival: [],
+      endless: [],
+      killTarget: [],
+      supplyDefense: []
+    },
+    team: {
+      timedSurvival: [],
+      endless: [],
+      killTarget: [],
+      supplyDefense: []
+    }
+  };
+}
 const TUTORIAL_STEPS: TutorialStep[] = ['room', 'ready', 'countdown', 'move', 'attack', 'levelup', 'collect', 'craft', 'items', 'complete'];
 const TUTORIAL_STEP_LABELS: Record<TutorialStep, string> = {
   room: '방',
@@ -411,6 +430,8 @@ function LobbyApp() {
   const [error, setError] = useState('');
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const [weeklyRankings, setWeeklyRankings] = useState<WeeklyRankings>(() => emptyWeeklyRankings());
+  const [rankingStatus, setRankingStatus] = useState('');
   const [pendingAction, setPendingAction] = useState<PendingRoomAction | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
@@ -437,6 +458,17 @@ function LobbyApp() {
   const refreshRooms = () => {
     socket.emit('requestRoomList', setRooms);
   };
+
+  const refreshRankings = useCallback(async () => {
+    try {
+      const response = await fetch('/api/rankings/weekly');
+      if (!response.ok) throw new Error(`Ranking request failed: ${response.status}`);
+      setWeeklyRankings(await response.json() as WeeklyRankings);
+      setRankingStatus('');
+    } catch {
+      setRankingStatus('랭킹을 불러오지 못했습니다.');
+    }
+  }, []);
 
   useEffect(() => {
     roomIdRef.current = roomId;
@@ -477,15 +509,18 @@ function LobbyApp() {
     socket.on('snapshot', handleSnapshot);
     socket.on('errorMessage', setError);
     refreshRooms();
+    refreshRankings();
     const roomRefreshTimer = window.setInterval(refreshRooms, 2500);
+    const rankingRefreshTimer = window.setInterval(refreshRankings, 15000);
     return () => {
       window.clearInterval(roomRefreshTimer);
+      window.clearInterval(rankingRefreshTimer);
       socket.off('connect', handleConnect);
       socket.off('joined');
       socket.off('snapshot', handleSnapshot);
       socket.off('errorMessage');
     };
-  }, []);
+  }, [refreshRankings]);
 
   useEffect(() => {
     if (deepLinkHandledRef.current) return;
@@ -613,6 +648,8 @@ function LobbyApp() {
             <button type="button" onClick={() => setTutorialOpen(true)}>게임 설명</button>
             <button type="button" className="primary" onClick={() => setPendingAction({ mode: 'create' })}>방 생성</button>
           </div>
+
+          <WeeklyRankingBoard rankings={weeklyRankings} status={rankingStatus} onRefresh={refreshRankings} />
 
           <div className="direct-room">
             <label>
@@ -984,6 +1021,68 @@ function LobbyApp() {
   }
 
   return <GameView snapshot={snapshot} playerId={playerId} />;
+}
+
+function WeeklyRankingBoard({
+  rankings,
+  status,
+  onRefresh
+}: {
+  rankings: WeeklyRankings;
+  status: string;
+  onRefresh: () => void;
+}) {
+  return (
+    <section className="leaderboard-board" aria-label="주간 랭킹 전광판">
+      <div className="leaderboard-header">
+        <div>
+          <strong>주간 랭킹 전광판</strong>
+          <span>{rankings.weekStart ? `${rankings.weekStart} 시작` : '이번 주 기록 대기'}</span>
+        </div>
+        <button type="button" onClick={onRefresh}>갱신</button>
+      </div>
+      {status && <p className="leaderboard-status">{status}</p>}
+      <div className="leaderboard-grid">
+        {RANKING_MODES.map((mode) => (
+          <section key={mode} className="leaderboard-mode">
+            <h2>{GAME_MODE_LABELS[mode]}</h2>
+            <RankingColumn title="개인 점수" entries={rankings.personal[mode]} />
+            <RankingColumn title="방 합산" entries={rankings.team[mode]} team />
+          </section>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function RankingColumn({
+  title,
+  entries,
+  team
+}: {
+  title: string;
+  entries: WeeklyRankings['personal'][GameMode];
+  team?: boolean;
+}) {
+  return (
+    <div className="leaderboard-column">
+      <div className="leaderboard-column-title">
+        <span>{title}</span>
+      </div>
+      {entries.length === 0 ? (
+        <p className="leaderboard-empty">기록 없음</p>
+      ) : (
+        entries.slice(0, 3).map((entry) => (
+          <div key={entry.id} className="leaderboard-row">
+            <strong>{entry.rank}</strong>
+            <span>{entry.displayName}</span>
+            <b>{entry.score.toLocaleString()}점</b>
+            <em>{team ? `${entry.playerCount}명 · ${entry.kills}처치` : `${entry.kills}처치 · ${formatDuration(entry.survivalSec)}`}</em>
+          </div>
+        ))
+      )}
+    </div>
+  );
 }
 
 function TutorialGame({ onExit }: { onExit: () => void }) {
