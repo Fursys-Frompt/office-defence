@@ -9,25 +9,29 @@
     "dev:client": "vite --host 0.0.0.0 --port 5173",
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist/server/server/src/index.js",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
+    "deploy": "npm run build && wrangler deploy",
+    "preview": "npm run build && wrangler dev"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",
     "express": "^4.22.1",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
-    "vite": "^7.2.7",
     "typescript": "^5.9.3",
-    "react": "^19.2.1",
-    "react-dom": "^19.2.1"
+    "vite": "^7.2.7"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.42.3",
     "@types/express": "^5.0.6",
     "@types/node": "^25.0.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "concurrently": "^9.2.1",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "wrangler": "^4.105.0"
   },
   "engines": {
     "node": ">=20"
