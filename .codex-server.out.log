@@ -1,5 +1,5 @@
 
-> zombie-office-survival@0.1.0 start
-> node dist/server/server/src/index.js
+> zombie-office-survival@0.1.0 dev:server
+> tsx watch server/src/index.ts
 
 Zombie Office Survival server listening on 3000

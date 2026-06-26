@@ -95,7 +95,11 @@ const GAME_MODE_MAP_LABELS: Record<GameMode, string> = {
   killTarget: '중앙 교전 구역',
   supplyDefense: '물자 방어 구역'
 };
-type TutorialCraftFocus = 'station' | 'panel';
+type TutorialCraftFocus = 'station' | 'openButton' | 'panel';
+type TutorialOverlayLayout = {
+  focus?: React.CSSProperties;
+  arrow?: React.CSSProperties;
+};
 const GAME_DIFFICULTY_LABELS: Record<GameDifficulty, string> = {
   easy: '이지',
   normal: '노말',
@@ -150,6 +154,8 @@ const INPUT_SEND_MS = 16;
 const ITEM_INPUT_HOLD_MS = 220;
 const OPENING_TIP_SECONDS = 3;
 const MAX_CRAFT_LEVEL = 5;
+const MAX_CANVAS_DPR = 1.5;
+const TUTORIAL_OVERLAY_UPDATE_MS = 80;
 const CAMERA_FOLLOW_AMOUNT = 0.62;
 const LOCAL_PLAYER_FOLLOW_AMOUNT = 0.84;
 const REMOTE_ENTITY_FOLLOW_AMOUNT = 0.36;
@@ -645,7 +651,8 @@ function LobbyApp() {
           </div>
 
           <div className="lobby-actions">
-            <button type="button" onClick={() => setTutorialOpen(true)}>게임 설명</button>
+            <button type="button" onClick={() => setGuideOpen(true)}>게임 설명</button>
+            <button type="button" onClick={() => setTutorialOpen(true)}>튜토리얼 플레이</button>
             <button type="button" className="primary" onClick={() => setPendingAction({ mode: 'create' })}>방 생성</button>
           </div>
 
@@ -754,7 +761,8 @@ function LobbyApp() {
               </div>
             </div>
           <div className="room-header-actions">
-              <button type="button" onClick={() => setTutorialOpen(true)}>게임 설명</button>
+              <button type="button" onClick={() => setGuideOpen(true)}>게임 설명</button>
+              <button type="button" onClick={() => setTutorialOpen(true)}>튜토리얼 플레이</button>
               <button type="button" onClick={copyInviteLink}>초대 링크</button>
               <button onClick={leaveRoom}>나가기</button>
             </div>
@@ -1032,6 +1040,7 @@ function WeeklyRankingBoard({
   status: string;
   onRefresh: () => void;
 }) {
+  const [rankingOpen, setRankingOpen] = useState(false);
   return (
     <section className="leaderboard-board" aria-label="주간 랭킹 전광판">
       <div className="leaderboard-header">
@@ -1039,23 +1048,95 @@ function WeeklyRankingBoard({
           <strong>주간 랭킹 전광판</strong>
           <span>{rankings.weekStart ? `${rankings.weekStart} 시작` : '이번 주 기록 대기'}</span>
         </div>
-        <button type="button" onClick={onRefresh}>갱신</button>
+        <div className="leaderboard-actions">
+          <button type="button" onClick={() => setRankingOpen(true)}>전체 보기</button>
+          <button type="button" onClick={onRefresh}>갱신</button>
+        </div>
       </div>
       {status && <p className="leaderboard-status">{status}</p>}
-      <div className="leaderboard-grid">
+      <div className="leaderboard-stream">
         {RANKING_MODES.map((mode) => (
-          <section key={mode} className="leaderboard-mode">
-            <h2>{GAME_MODE_LABELS[mode]}</h2>
-            <RankingColumn title="개인 점수" entries={rankings.personal[mode]} />
-            <RankingColumn title="방 합산" entries={rankings.team[mode]} team />
-          </section>
+          <RankingLine
+            key={mode}
+            mode={mode}
+            personal={rankings.personal[mode][0]}
+            team={rankings.team[mode][0]}
+          />
         ))}
       </div>
+      {rankingOpen && (
+        <RankingDetailModal
+          rankings={rankings}
+          onRefresh={onRefresh}
+          onClose={() => setRankingOpen(false)}
+        />
+      )}
     </section>
   );
 }
 
-function RankingColumn({
+function RankingLine({
+  mode,
+  personal,
+  team
+}: {
+  mode: GameMode;
+  personal?: WeeklyRankings['personal'][GameMode][number];
+  team?: WeeklyRankings['team'][GameMode][number];
+}) {
+  return (
+    <p className="leaderboard-line">
+      <strong>{GAME_MODE_LABELS[mode]}</strong>
+      <span>
+        개인 {personal ? `${personal.displayName} ${personal.score.toLocaleString()}점` : '기록 없음'}
+      </span>
+      <span>
+        방 합산 {team ? `${team.displayName} ${team.score.toLocaleString()}점` : '기록 없음'}
+      </span>
+    </p>
+  );
+}
+
+function RankingDetailModal({
+  rankings,
+  onRefresh,
+  onClose
+}: {
+  rankings: WeeklyRankings;
+  onRefresh: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <section className="modal-card ranking-detail-modal">
+        <div className="modal-header ranking-detail-header">
+          <div>
+            <h2>주간 랭킹 전체 보기</h2>
+            <p>{rankings.weekStart ? `${rankings.weekStart} 시작` : '아직 기록된 주간 랭킹이 없습니다.'}</p>
+          </div>
+          <div className="ranking-detail-actions">
+            <button type="button" onClick={onRefresh}>갱신</button>
+            <button type="button" onClick={onClose}>닫기</button>
+          </div>
+        </div>
+        <div className="ranking-detail-grid">
+          {RANKING_MODES.map((mode) => (
+            <section key={mode} className="ranking-detail-mode">
+              <div className="ranking-detail-mode-title">
+                <strong>{GAME_MODE_LABELS[mode]}</strong>
+                <span>{GAME_MODE_MAP_LABELS[mode]}</span>
+              </div>
+              <RankingDetailColumn title="개인 점수" entries={rankings.personal[mode]} />
+              <RankingDetailColumn title="방 합산" entries={rankings.team[mode]} team />
+            </section>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function RankingDetailColumn({
   title,
   entries,
   team
@@ -1065,15 +1146,15 @@ function RankingColumn({
   team?: boolean;
 }) {
   return (
-    <div className="leaderboard-column">
-      <div className="leaderboard-column-title">
+    <div className="ranking-detail-column">
+      <div className="ranking-detail-column-title">
         <span>{title}</span>
       </div>
       {entries.length === 0 ? (
         <p className="leaderboard-empty">기록 없음</p>
       ) : (
-        entries.slice(0, 3).map((entry) => (
-          <div key={entry.id} className="leaderboard-row">
+        entries.map((entry) => (
+          <div key={entry.id} className="ranking-detail-row">
             <strong>{entry.rank}</strong>
             <span>{entry.displayName}</span>
             <b>{entry.score.toLocaleString()}점</b>
@@ -1651,7 +1732,10 @@ function getCameraTargetForPlayer(snapshot: GameSnapshot, player: GameSnapshot['
 }
 
 function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; playerId: string; tutorial?: TutorialController }) {
+  const gameRef = useRef<HTMLElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const craftingOpenButtonRef = useRef<HTMLButtonElement | null>(null);
+  const craftingPanelRef = useRef<HTMLDivElement | null>(null);
   const latestRender = useRef<{ snapshot: GameSnapshot; me: NonNullable<typeof snapshot.players[number]> } | null>(null);
   const pressed = useRef(new Set<string>());
   const pointer = useRef<Vec2>({ x: 0, y: 0 });
@@ -1684,6 +1768,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const previousWaveKey = useRef('');
   const audio = useRef(createAudioEngine());
   const [waveBanner, setWaveBanner] = useState<WaveBanner | null>(null);
+  const [tutorialLayout, setTutorialLayout] = useState<TutorialOverlayLayout>({});
   const spriteSheet = useGameImage(spriteSheetUrl);
   const propAtlas = useGameImage(propAtlasUrl);
   const craftingIcons = useGameImage(craftingIconsUrl);
@@ -1860,7 +1945,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       const current = latestRender.current;
       if (current) {
         const rect = canvas.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
+        const dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR);
         const targetWidth = Math.floor(rect.width * dpr);
         const targetHeight = Math.floor(rect.height * dpr);
         if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
@@ -1944,6 +2029,13 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
     : undefined;
   const canUseCraftingStation = Boolean(nearestCraftingStation && !isSpectating);
   const showCraftingPanel = canUseCraftingStation && craftingPanelOpen;
+  const tutorialCraftFocus: TutorialCraftFocus = tutorial?.step === 'craft'
+    ? showCraftingPanel
+      ? 'panel'
+      : canUseCraftingStation
+        ? 'openButton'
+        : 'station'
+    : 'station';
   const sortedCraftWeapons = useMemo(() => {
     return sortCraftEntries(weaponKeys, (weapon) => ({
       crafted: Boolean(me?.craftedWeapons.includes(weapon)),
@@ -1974,6 +2066,32 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   useEffect(() => {
     if (!canUseCraftingStation) setCraftingPanelOpen(false);
   }, [canUseCraftingStation]);
+
+  useEffect(() => {
+    if (!tutorial) {
+      setTutorialLayout({});
+      return;
+    }
+
+    const updateLayout = () => {
+      const layout = calculateTutorialOverlayLayout({
+        step: tutorial.step,
+        craftFocus: tutorialCraftFocus,
+        main: gameRef.current,
+        canvas: canvasRef.current,
+        snapshot,
+        player: me,
+        playerId,
+        openButton: craftingOpenButtonRef.current,
+        craftingPanel: craftingPanelRef.current
+      });
+      setTutorialLayout((current) => sameTutorialLayout(current, layout) ? current : layout);
+    };
+
+    updateLayout();
+    const timer = window.setInterval(updateLayout, TUTORIAL_OVERLAY_UPDATE_MS);
+    return () => window.clearInterval(timer);
+  }, [me, playerId, snapshot, tutorial, tutorialCraftFocus]);
 
   useEffect(() => {
     if (snapshot.phase !== 'playing') return;
@@ -2058,7 +2176,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   }, [isSpectating, me, queueCraftAction]);
 
   return (
-    <main className={`game joystick-${touchControlSide}`}>
+    <main ref={gameRef} className={`game joystick-${touchControlSide}`}>
       <canvas
         ref={canvasRef}
         onMouseMove={(event) => {
@@ -2206,6 +2324,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
         )}
         {canUseCraftingStation && !showCraftingPanel && (
           <button
+            ref={craftingOpenButtonRef}
             type="button"
             className="crafting-open-button"
             onTouchStart={(event) => {
@@ -2220,7 +2339,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           </button>
         )}
         {showCraftingPanel && (
-          <div className="crafting-list">
+          <div ref={craftingPanelRef} className="crafting-list">
             {craftPanelTab === 'weapon' && sortedCraftWeapons.map((weapon) => {
               const crafted = Boolean(me?.craftedWeapons.includes(weapon));
               const equipped = me?.equippedWeapon === weapon;
@@ -2438,7 +2557,8 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
       {tutorial && (
         <TutorialOverlay
           step={tutorial.step}
-          craftFocus={showCraftingPanel ? 'panel' : 'station'}
+          craftFocus={tutorialCraftFocus}
+          layout={tutorialLayout}
           onNext={tutorial.onNext}
           onExit={tutorial.onExit}
         />
@@ -2447,14 +2567,170 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   );
 }
 
+function calculateTutorialOverlayLayout({
+  step,
+  craftFocus,
+  main,
+  canvas,
+  snapshot,
+  player,
+  playerId,
+  openButton,
+  craftingPanel
+}: {
+  step: TutorialStep;
+  craftFocus: TutorialCraftFocus;
+  main: HTMLElement | null;
+  canvas: HTMLCanvasElement | null;
+  snapshot: GameSnapshot;
+  player?: GameSnapshot['players'][number];
+  playerId: string;
+  openButton: HTMLElement | null;
+  craftingPanel: HTMLElement | null;
+}): TutorialOverlayLayout {
+  if (!main) return {};
+  if (step === 'craft') {
+    if (craftFocus === 'panel') return layoutFromElement(main, craftingPanel, 8);
+    if (craftFocus === 'openButton') return layoutFromElement(main, openButton, 8);
+    const station = snapshot.craftingStations[0];
+    if (!station || !player || !canvas) return {};
+    return layoutFromWorldTarget({
+      main,
+      canvas,
+      snapshot,
+      player,
+      playerId,
+      position: station.position,
+      width: Math.max(190, station.width + 74),
+      height: Math.max(136, station.height + 70),
+      arrowOffset: 88
+    });
+  }
+  if (step === 'collect') {
+    const resource = snapshot.resources[0];
+    if (!resource || !player || !canvas) return {};
+    return layoutFromWorldTarget({
+      main,
+      canvas,
+      snapshot,
+      player,
+      playerId,
+      position: resource.position,
+      width: 180,
+      height: 140,
+      arrowOffset: 0
+    });
+  }
+  if (step === 'attack') {
+    const zombie = snapshot.zombies[0];
+    if (!zombie || !player || !canvas) return {};
+    return layoutFromWorldTarget({
+      main,
+      canvas,
+      snapshot,
+      player,
+      playerId,
+      position: zombie.position,
+      width: 220,
+      height: 160,
+      arrowOffset: 0
+    });
+  }
+  return {};
+}
+
+function layoutFromElement(main: HTMLElement, element: HTMLElement | null, padding: number): TutorialOverlayLayout {
+  if (!element) return {};
+  const mainRect = main.getBoundingClientRect();
+  const rect = element.getBoundingClientRect();
+  return {
+    focus: {
+      left: Math.round(rect.left - mainRect.left - padding),
+      top: Math.round(rect.top - mainRect.top - padding),
+      right: 'auto',
+      bottom: 'auto',
+      transform: 'none',
+      width: Math.round(rect.width + padding * 2),
+      height: Math.round(rect.height + padding * 2)
+    }
+  };
+}
+
+function layoutFromWorldTarget({
+  main,
+  canvas,
+  snapshot,
+  player,
+  playerId,
+  position,
+  width,
+  height,
+  arrowOffset
+}: {
+  main: HTMLElement;
+  canvas: HTMLCanvasElement;
+  snapshot: GameSnapshot;
+  player: GameSnapshot['players'][number];
+  playerId: string;
+  position: Vec2;
+  width: number;
+  height: number;
+  arrowOffset: number;
+}): TutorialOverlayLayout {
+  const mainRect = main.getBoundingClientRect();
+  const canvasRect = canvas.getBoundingClientRect();
+  const cameraTarget = getCameraTargetForPlayer(snapshot, player);
+  const camera = renderPositions.get(`camera:${playerId}`) ?? cameraTarget.position;
+  const screen = worldToScreen(position, canvasRect.width, canvasRect.height, camera);
+  const center = {
+    x: canvasRect.left - mainRect.left + screen.x,
+    y: canvasRect.top - mainRect.top + screen.y
+  };
+  return {
+    focus: {
+      left: Math.round(center.x - width / 2),
+      top: Math.round(center.y - height / 2),
+      right: 'auto',
+      bottom: 'auto',
+      transform: 'none',
+      width: Math.round(width),
+      height: Math.round(height)
+    },
+    arrow: arrowOffset > 0
+      ? {
+          left: Math.round(center.x - 30),
+          top: Math.round(center.y - height / 2 - arrowOffset),
+          right: 'auto',
+          bottom: 'auto',
+          transform: 'none'
+        }
+      : undefined
+  };
+}
+
+function sameTutorialLayout(a: TutorialOverlayLayout, b: TutorialOverlayLayout) {
+  return sameStyleRect(a.focus, b.focus) && sameStyleRect(a.arrow, b.arrow);
+}
+
+function sameStyleRect(a?: React.CSSProperties, b?: React.CSSProperties) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return a.left === b.left
+    && a.top === b.top
+    && a.width === b.width
+    && a.height === b.height;
+}
+
 function TutorialOverlay({
   step,
   craftFocus = 'station',
+  layout,
   onNext,
   onExit
 }: {
   step: TutorialStep;
   craftFocus?: TutorialCraftFocus;
+  layout?: TutorialOverlayLayout;
   onNext: () => void;
   onExit: () => void;
 }) {
@@ -2463,9 +2739,9 @@ function TutorialOverlay({
   const focusClass = step === 'craft' ? `tutorial-focus-craft-${craftFocus}` : `tutorial-focus-${step}`;
   return (
     <>
-      {shouldShowFocus && <div className={`tutorial-focus ${focusClass}`} aria-hidden="true" />}
+      {shouldShowFocus && <div className={`tutorial-focus ${focusClass}`} style={layout?.focus} aria-hidden="true" />}
       {step === 'craft' && craftFocus === 'station' && (
-        <div className="tutorial-direction-arrow tutorial-direction-arrow-craft" aria-hidden="true">
+        <div className="tutorial-direction-arrow tutorial-direction-arrow-craft" style={layout?.arrow} aria-hidden="true">
           <span>제작대</span>
         </div>
       )}
@@ -2530,9 +2806,11 @@ function TutorialOverlay({
           <>
             <strong>8. 제작대로 이동 후 장비 제작</strong>
             {craftFocus === 'station' ? (
-              <p>노란 원으로 표시된 가까운 제작대까지 직접 이동하세요. 제작대 근처에 들어가면 아래 제작 HUD가 열립니다.</p>
+              <p>화살표가 가리키는 제작대 원 안으로 이동하세요. 제작대 근처에 들어가면 제작 버튼이 나타납니다.</p>
+            ) : craftFocus === 'openButton' ? (
+              <p>제작대 범위에 들어왔습니다. 아래 제작 버튼을 눌러 제작 목록을 여세요.</p>
             ) : (
-              <p>이제 아래 제작 HUD에서 키보드 샷건 버튼을 선택하세요. 하이라이트된 제작 리스트가 실제 제작 영역입니다.</p>
+              <p>열린 제작 목록에서 키보드 샷건을 선택하세요. 제작하면 바로 장착되고 다음 단계로 넘어갑니다.</p>
             )}
           </>
         )}
@@ -2540,7 +2818,7 @@ function TutorialOverlay({
           <>
             <strong>9. 아이템과 낮밤 사이클</strong>
             <p>전투 중 Q는 믹스커피 회복, E는 안전지대 설치/수리입니다. 낮에 재료를 모으고 밤 공세 전에 장비를 강화하세요.</p>
-            <p>보조장비는 종류마다 다릅니다. MZ의 키캡은 R로 쓰고, 로봇청소기와 연차 신청서 방패, 비상 AED는 장착 중 자동으로 작동합니다.</p>
+            <p>보조장비는 종류마다 다릅니다. 로봇청소기, MZ의 키캡, 연차 신청서 방패, 비상 AED는 장착 중 자동으로 작동합니다.</p>
             <div className="tutorial-step-actions">
               <button type="button" className="primary" onClick={onNext}>결과 화면 보기</button>
             </div>
