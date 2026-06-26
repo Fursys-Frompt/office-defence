@@ -61,6 +61,10 @@ type SafeZoneImages = {
   damaged: HTMLImageElement | null;
   critical: HTMLImageElement | null;
 };
+type StaticLayerCache = {
+  key: string;
+  canvas: HTMLCanvasElement;
+};
 type TutorialStep = 'room' | 'ready' | 'countdown' | 'move' | 'attack' | 'levelup' | 'collect' | 'craft' | 'items' | 'complete';
 type TutorialController = {
   step: TutorialStep;
@@ -1736,6 +1740,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const craftingOpenButtonRef = useRef<HTMLButtonElement | null>(null);
   const craftingPanelRef = useRef<HTMLDivElement | null>(null);
+  const staticLayerCache = useRef<StaticLayerCache | null>(null);
   const latestRender = useRef<{ snapshot: GameSnapshot; me: NonNullable<typeof snapshot.players[number]> } | null>(null);
   const pressed = useRef(new Set<string>());
   const pointer = useRef<Vec2>({ x: 0, y: 0 });
@@ -1971,6 +1976,7 @@ function GameView({ snapshot, playerId, tutorial }: { snapshot: GameSnapshot; pl
           supplyCacheImage,
           safeZoneImages,
           safeZoneKitImage,
+          staticLayerCache,
           safeZonePreview,
           visualEffects.current
         );
@@ -3288,6 +3294,7 @@ function drawGame(
   supplyCacheImage: HTMLImageElement | null,
   safeZoneImages: SafeZoneImages,
   safeZoneKitImage: HTMLImageElement | null,
+  staticLayerCache: React.MutableRefObject<StaticLayerCache | null>,
   safeZonePreview: Vec2 | undefined,
   effects: VisualEffect[]
 ) {
@@ -3297,29 +3304,34 @@ function drawGame(
   context.save();
   context.translate(width / 2 - camera.x, height / 2 - camera.y);
 
-  drawOfficeFloor(context, snapshot.map, propAtlas);
-  for (const wall of snapshot.walls) {
-    drawWall(context, wall);
-  }
+  drawStaticLayer(context, snapshot, propAtlas, staticLayerCache);
+  const view = worldViewRect(width, height, camera, 180);
   for (const warning of snapshot.spawnWarnings) {
+    if (!isPointInView(warning.position, view, 120)) continue;
     drawSpawnWarning(context, warning);
   }
   for (const zone of snapshot.safeZones) {
+    if (!isPointInView(zone.position, view, zone.radius + 100)) continue;
     drawSafeZone(context, zone, safeZoneImages);
   }
   for (const resource of snapshot.resources) {
+    if (!isPointInView(resource.position, view, 90)) continue;
     drawWorldResource(context, propAtlas, craftingIcons, safeZoneKitImage, resource.type, resource.position);
   }
   for (const station of snapshot.craftingStations) {
+    if (!isPointInView(station.position, view, station.interactionRadius + 90)) continue;
     drawCraftingStation(context, propAtlas, station);
   }
   for (const zone of snapshot.powerZones) {
+    if (!isPointInView(zone.position, view, zone.radius + 80)) continue;
     drawPowerZone(context, zone);
   }
   for (const zone of snapshot.supportZones) {
+    if (!isPointInView(zone.position, view, zone.radius + 80)) continue;
     drawSupportZone(context, zone);
   }
   for (const facility of snapshot.facilities) {
+    if (!isPointInView(facility.position, view, Math.max(facility.width ?? 80, facility.height ?? 80))) continue;
     drawWorldFacility(context, propAtlas, supplyCacheImage, facility);
     const hpBarWidth = Math.max(48, (facility.width ?? 48) * 0.72);
     const hpBarTop = facility.position.y - (facility.height ?? 56) / 2 - 9;
@@ -3329,9 +3341,11 @@ function drawGame(
   }
   if (safeZonePreview) drawSafeZonePreview(context, safeZonePreview, safeZoneImages.intact);
   for (const projectile of snapshot.projectiles) {
+    if (!isPointInView(projectile.position, view, 80)) continue;
     drawProjectile(context, projectile);
   }
   for (const zombie of snapshot.zombies) {
+    if (!isPointInView(zombie.position, view, zombie.type === 'tanker' ? 120 : 90)) continue;
     const impact = getActiveImpact(zombie.position, effects);
     const shake = impact ? Math.sin((performance.now() - impact.startedAt) * 0.09) * (1 - impact.age) * 5 : 0;
     const now = performance.now();
@@ -3347,6 +3361,7 @@ function drawGame(
     if (impact) drawImpactFlash(context, drawPosition, zombie.type === 'tanker' ? 58 : 42, impact.age, impact.type);
   }
   for (const player of snapshot.players) {
+    if (!isPointInView(player.position, view, 120)) continue;
     const now = performance.now();
     const motion = sampleMotion(`player:${player.id}`, player.position, now);
     const moving = now - motion.lastMovedAt < MOVEMENT_HOLD_MS;
@@ -3394,6 +3409,65 @@ function drawGame(
   drawVisualEffects(context, effects);
   context.restore();
   drawNightOverlay(context, width, height, snapshot, camera);
+}
+
+function drawStaticLayer(
+  context: CanvasRenderingContext2D,
+  snapshot: GameSnapshot,
+  propAtlas: HTMLImageElement | null,
+  cacheRef: React.MutableRefObject<StaticLayerCache | null>
+) {
+  const key = staticLayerKey(snapshot, propAtlas);
+  let cache = cacheRef.current;
+  if (!cache || cache.key !== key) {
+    const canvas = document.createElement('canvas');
+    canvas.width = snapshot.map.width;
+    canvas.height = snapshot.map.height;
+    const layerContext = canvas.getContext('2d');
+    if (layerContext) {
+      drawOfficeFloor(layerContext, snapshot.map, propAtlas);
+      for (const wall of snapshot.walls) {
+        drawWall(layerContext, wall);
+      }
+    }
+    cache = { key, canvas };
+    cacheRef.current = cache;
+  }
+  context.drawImage(cache.canvas, 0, 0);
+}
+
+function staticLayerKey(snapshot: GameSnapshot, propAtlas: HTMLImageElement | null) {
+  const wallKey = snapshot.walls
+    .map((wall) => `${wall.x},${wall.y},${wall.width},${wall.height}`)
+    .join('|');
+  return [
+    snapshot.map.name,
+    snapshot.map.theme,
+    snapshot.map.width,
+    snapshot.map.height,
+    propAtlas ? `${propAtlas.src}:${propAtlas.naturalWidth}x${propAtlas.naturalHeight}` : 'no-props',
+    wallKey
+  ].join(';');
+}
+
+function worldViewRect(width: number, height: number, camera: Vec2, margin: number) {
+  return {
+    left: camera.x - width / 2 - margin,
+    right: camera.x + width / 2 + margin,
+    top: camera.y - height / 2 - margin,
+    bottom: camera.y + height / 2 + margin
+  };
+}
+
+function isPointInView(
+  position: Vec2,
+  view: ReturnType<typeof worldViewRect>,
+  radius = 0
+) {
+  return position.x + radius >= view.left
+    && position.x - radius <= view.right
+    && position.y + radius >= view.top
+    && position.y - radius <= view.bottom;
 }
 
 function drawNightOverlay(context: CanvasRenderingContext2D, width: number, height: number, snapshot: GameSnapshot, camera: Vec2) {

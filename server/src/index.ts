@@ -123,6 +123,9 @@ const MAP_WIDTH = 1600;
 const MAP_HEIGHT = 1000;
 const TICK_RATE = 20;
 const DT = 1 / TICK_RATE;
+const SNAPSHOT_RATE = 10;
+const SNAPSHOT_FRAME_INTERVAL = Math.max(1, Math.round(TICK_RATE / SNAPSHOT_RATE));
+const SNAPSHOT_FEEDBACK_LIMIT = 24;
 const PLAYER_RADIUS = 18;
 const ZOMBIE_RADIUS = 16;
 const RESOURCE_RADIUS = 16;
@@ -564,19 +567,60 @@ function snapshot(room: Room): GameSnapshot {
     roomTitle: room.title,
     phase: room.phase,
     settings: room.settings,
-    players: [...room.players.values()],
+    players: [...room.players.values()].map(snapshotPlayer),
     results: room.results,
-    zombies: room.zombies,
-    spawnWarnings: room.spawnWarnings,
-    resources: room.resources,
-    craftingStations: room.craftingStations,
-    facilities: room.facilities,
-    powerZones: room.powerZones,
-    supportZones: room.supportZones,
-    safeZones: room.safeZones,
-    projectiles: room.projectiles,
+    zombies: room.zombies.map((zombie) => ({
+      ...zombie,
+      hp: q1(zombie.hp),
+      position: qVec(zombie.position)
+    })),
+    spawnWarnings: room.spawnWarnings.map((warning) => ({
+      ...warning,
+      position: qVec(warning.position),
+      ttl: q1(warning.ttl),
+      duration: q1(warning.duration)
+    })),
+    resources: room.resources.map((resource) => ({
+      ...resource,
+      position: qVec(resource.position)
+    })),
+    craftingStations: room.craftingStations.map((station) => ({
+      ...station,
+      position: qVec(station.position)
+    })),
+    facilities: room.facilities.map((facility) => ({
+      ...facility,
+      hp: q1(facility.hp),
+      position: qVec(facility.position)
+    })),
+    powerZones: room.powerZones.map((zone) => ({
+      ...zone,
+      position: qVec(zone.position),
+      ttl: q1(zone.ttl)
+    })),
+    supportZones: room.supportZones.map((zone) => ({
+      ...zone,
+      position: qVec(zone.position),
+      ttl: q1(zone.ttl)
+    })),
+    safeZones: room.safeZones.map((zone) => ({
+      ...zone,
+      position: qVec(zone.position),
+      hp: q1(zone.hp),
+      maxHp: q1(zone.maxHp)
+    })),
+    projectiles: room.projectiles.map((projectile) => ({
+      ...projectile,
+      position: qVec(projectile.position),
+      velocity: qVec(projectile.velocity),
+      ttl: q2(projectile.ttl),
+      damage: projectile.damage === undefined ? undefined : q1(projectile.damage)
+    })),
     walls: room.walls,
-    feedbackEvents: room.feedbackEvents.map(({ ttl: _ttl, ...event }) => event),
+    feedbackEvents: room.feedbackEvents.slice(-SNAPSHOT_FEEDBACK_LIMIT).map(({ ttl: _ttl, ...event }) => ({
+      ...event,
+      position: qVec(event.position)
+    })),
     wave: room.wave,
     wavePhase: room.wavePhase,
     waveTimeRemaining: Math.max(0, Math.ceil(room.waveTimer)),
@@ -589,6 +633,36 @@ function snapshot(room: Room): GameSnapshot {
     objective: objectiveState(room, elapsedSec),
     map: room.map
   };
+}
+
+function snapshotPlayer(player: Player): Player {
+  return {
+    ...player,
+    hp: q1(player.hp),
+    maxHp: q1(player.maxHp),
+    downedUntil: player.downedUntil === undefined ? undefined : q1(player.downedUntil),
+    reviveProgress: player.reviveProgress === undefined ? undefined : q2(player.reviveProgress),
+    position: qVec(player.position),
+    aim: q2Vec(player.aim),
+    supportExpiresAt: player.supportExpiresAt === undefined ? undefined : q1(player.supportExpiresAt),
+    survivalSec: Math.floor(player.survivalSec)
+  };
+}
+
+function qVec(vector: Vec2): Vec2 {
+  return { x: Math.round(vector.x), y: Math.round(vector.y) };
+}
+
+function q2Vec(vector: Vec2): Vec2 {
+  return { x: q2(vector.x), y: q2(vector.y) };
+}
+
+function q1(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function q2(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
 function activePlayers(room: Room) {
@@ -2777,7 +2851,9 @@ async function supabaseRequest<T>(pathName: string, init: RequestInit = {}) {
     throw new Error(`Supabase ${response.status}: ${message}`);
   }
   if (response.status === 204) return undefined;
-  return await response.json() as T;
+  const text = await response.text();
+  if (!text) return undefined;
+  return JSON.parse(text) as T;
 }
 
 function kstWeekStart(date = new Date()) {
@@ -3114,7 +3190,7 @@ setInterval(() => {
   loopFrame += 1;
   for (const room of rooms.values()) {
     tickRoom(room);
-    broadcast(room);
+    if (loopFrame % SNAPSHOT_FRAME_INTERVAL === 0 || room.phase !== 'playing') broadcast(room);
   }
 }, 1000 / TICK_RATE);
 
